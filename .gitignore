@@ -119,3 +119,11 @@ dmypy.json
 
 # Custom
 *.html
+*.csv
+*.docx
+*.json
+*.pkl
+*.npz
+*.pt
+*.pth
+*.onnx
