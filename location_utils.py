@@ -155,7 +155,8 @@ def convert_coordinates(
     coords_sys: str,
     dst_sys: str,
     src_ref_lla: Optional[Any] = None,
-    dst_ref_lla: Optional[Any] = None
+    dst_ref_lla: Optional[Any] = None,
+    output_type: str = "auto"
 ) -> Any:
     # 1. To Tensor
     t_coords, meta = _to_tensor(coords)
@@ -169,11 +170,9 @@ def convert_coordinates(
         if c_sys == 'enu':
              if src_ref_lla is None: raise ValueError("src_ref_lla required for ENU")
              # If refs are same, return
-             # But refs might be difficult to compare efficiently. 
-             # Let's assume always convert if ENU->ENU. Or check logic (usually ECEF is intermediate).
              pass
         else:
-             return _from_tensor(t_coords, meta)
+             return _from_tensor(t_coords, meta, output_type=output_type)
 
     # Convert Ref LLA
     src_ref_t = None
@@ -214,7 +213,7 @@ def convert_coordinates(
     else:
         raise ValueError(f"Unknown system {d_sys}")
         
-    return _from_tensor(res, meta)
+    return _from_tensor(res, meta, output_type=output_type)
 
 def convert_covariance(
     cov: Any,
@@ -224,7 +223,8 @@ def convert_covariance(
     coords_sys: str = 'lla',
     src_ref_lla: Optional[Any] = None,
     dst_ref_lla: Optional[Any] = None,
-    coords_ref_lla: Optional[Any] = None
+    coords_ref_lla: Optional[Any] = None,
+    output_type: str = "auto"
 ) -> Any:
     # Requires location of covariance to calculate rotation
     # 'coords' should match 'cov' batch size
@@ -299,7 +299,7 @@ def convert_covariance(
         
     M = M2 @ M1
     res = M @ t_cov @ M.transpose(1, 2)
-    return _from_tensor(res, meta)
+    return _from_tensor(res, meta, output_type=output_type)
 
 def convert_vector(
     vec: Any,
@@ -309,7 +309,8 @@ def convert_vector(
     coords_sys: str = 'lla',
     src_ref_lla: Optional[Any] = None,
     dst_ref_lla: Optional[Any] = None,
-    coords_ref_lla: Optional[Any] = None
+    coords_ref_lla: Optional[Any] = None,
+    output_type: str = "auto"
 ) -> Any:
     # Logic similar to covariance but for vector (N,3)
     t_vec, meta = _to_tensor(vec)
@@ -364,4 +365,4 @@ def convert_vector(
         # Assuming (N,3)
         res = (M @ t_vec.unsqueeze(-1)).squeeze(-1)
         
-    return _from_tensor(res, meta)
+    return _from_tensor(res, meta, output_type=output_type)

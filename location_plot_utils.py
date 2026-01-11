@@ -1,6 +1,7 @@
 
 import torch
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 import plotly.colors as pcolors
 from typing import Optional, List, Union, Any, Tuple
@@ -33,8 +34,10 @@ class LocationPlotter:
         self.map_layout = dict(
             title=self.title,
             map=dict(style=style, zoom=zoom),
-            margin={"r":0,"t":40,"l":0,"b":0},
-            showlegend=True
+            margin={"r":0,"t":30,"l":0,"b":0},
+            showlegend=True,
+            # height=700, # Reverted: User wants responsive sizing
+            # autosize=False # Reverted
         )
         if self.map_url:
             self.map_layout['map']['layers'] = [{
@@ -53,12 +56,13 @@ class LocationPlotter:
 
     def _to_lla(self, coords, sys, ref_lla) -> torch.Tensor:
         # Helper to get LLA from inputs using functional API
-        return torch.tensor(location_utils.convert_coordinates(
+        return location_utils.convert_coordinates(
             coords, 
             coords_sys=sys, 
             dst_sys='lla', 
-            src_ref_lla=ref_lla if sys.lower()=='enu' else None
-        ))
+            src_ref_lla=ref_lla if sys.lower()=='enu' else None,
+            output_type='tensor'
+        )
 
     def _update_center(self, lla_tensor: torch.Tensor):
         if not self._center_updated and lla_tensor.numel() > 0:
@@ -90,7 +94,8 @@ class LocationPlotter:
         marker_size: int = 8,
         symbol: str = "circle", 
         opacity: float = 1.0,
-        colorbar_title: Optional[str] = None
+        colorbar_title: Optional[str] = None,
+        color_by_value: bool = True
     ):
         lla = self._to_lla(coords, sys, ref_lla)
         self._update_center(lla)
@@ -108,12 +113,13 @@ class LocationPlotter:
             'size': marker_size,
             'symbol': symbol,
             'opacity': opacity,
-            'cbar_title': colorbar_title if colorbar_title else (label + " Value")
+            'cbar_title': colorbar_title if colorbar_title else (label + " Value"),
+            'color_by_value': color_by_value
         })
 
     def add_covariance_2d(
         self,
-        coords: Any, # Needed for location
+        coords: Any,
         covariance: Any,
         cov_sys: str = 'lla',
         coords_sys: str = 'lla',
@@ -125,49 +131,44 @@ class LocationPlotter:
         color: str = "red",
         cmap: str = "Viridis",
         opacity: float = 1.0,
-        colorbar_title: Optional[str] = None
+        colorbar_title: Optional[str] = None,
+        color_by_value: bool = True
     ):
         # 1. Convert Coords to LLA for center update and plotting
         lla = self._to_lla(coords, coords_sys, coords_ref_lla)
         self._update_center(lla)
         
         # 2. Convert Covariance to ENU (Local per point)
-        # We need covariance at each point in a local ENU frame tangent to that point.
-        # This means dst_sys='enu', dst_ref_lla = THE POINTS THEMSELVES (lla)
-        # Src Ref depends on cov_sys
-        
-        cov_enu = torch.tensor(location_utils.convert_covariance(
+        cov_enu = location_utils.convert_covariance(
             cov=covariance,
             cov_sys=cov_sys,
             dst_sys='enu',
             coords=coords,
             coords_sys=coords_sys,
-            src_ref_lla=cov_ref_lla, # Ref for incoming covariance
-            dst_ref_lla=lla,         # We want ENU at the point location
-            coords_ref_lla=coords_ref_lla # Ref for incoming coords
-        )) # (N, 3, 3)
+            src_ref_lla=cov_ref_lla,
+            dst_ref_lla=lla,
+            coords_ref_lla=coords_ref_lla,
+            output_type='tensor'
+        ) # (N, 3, 3)
         
         cov_2d = cov_enu[:, 0:2, 0:2]
         ellipse_enu_2d = self._get_ellipse_points(cov_2d, sigma=sigma) # (N, P, 2)
         
         # 3. Convert Ellipses back to LLA for plotting
-        # Ellipse points are in local ENU.
         zeros = torch.zeros((ellipse_enu_2d.shape[0], ellipse_enu_2d.shape[1], 1), device=ellipse_enu_2d.device, dtype=torch.float64)
         ellipse_enu = torch.cat([ellipse_enu_2d, zeros], dim=2)
         N, P, _ = ellipse_enu.shape
         ellipse_flat = ellipse_enu.reshape(-1, 3)
         
-        # These are offsets in ENU. We need to add them to ref (LLA).
-        # OR, treat them as points in ENU frame centered at LLA.
-        # So convert ENU(ref=LLA) -> LLA
         refs_flat = lla.unsqueeze(1).expand(-1, P, -1).reshape(-1, 3)
         
-        ellipse_lla = torch.tensor(location_utils.convert_coordinates(
+        ellipse_lla = location_utils.convert_coordinates(
             ellipse_flat,
             coords_sys='enu',
             dst_sys='lla',
-            src_ref_lla=refs_flat
-        )).reshape(N, P, 3)
+            src_ref_lla=refs_flat,
+            output_type='tensor'
+        ).reshape(N, P, 3)
         
         vals, val_type = self._process_values(values)
         
@@ -180,7 +181,8 @@ class LocationPlotter:
             'color': color,
             'cmap': cmap,
             'opacity': opacity,
-            'cbar_title': colorbar_title if colorbar_title else label
+            'cbar_title': colorbar_title if colorbar_title else label,
+            'color_by_value': color_by_value
         })
 
     def add_velocity_2d(
@@ -197,24 +199,26 @@ class LocationPlotter:
         color: str = "green",
         cmap: str = "Viridis",
         opacity: float = 1.0,
-        colorbar_title: Optional[str] = None
+        colorbar_title: Optional[str] = None,
+        color_by_value: bool = True
     ):
         lla = self._to_lla(coords, coords_sys, coords_ref_lla)
         self._update_center(lla)
         
         # Convert Velocity to Local ENU
-        vel_enu = torch.tensor(location_utils.convert_vector(
+        vel_enu = location_utils.convert_vector(
             vec=velocity,
             vec_sys=vel_sys,
             dst_sys='enu',
             coords=coords,
             coords_sys=coords_sys,
             src_ref_lla=vel_ref_lla,
-            dst_ref_lla=lla, # Local ENU
-            coords_ref_lla=coords_ref_lla
-        ))
+            dst_ref_lla=lla, 
+            coords_ref_lla=coords_ref_lla,
+            output_type='tensor'
+        )
         
-        # Geometry Generation (Same as before)
+        # Geometry Generation
         end_enu = vel_enu * scale
         v2 = end_enu[:, 0:2]
         mag = torch.norm(v2, dim=1) + 1e-9
@@ -241,15 +245,16 @@ class LocationPlotter:
         pts_flat = pts_enu.reshape(-1, 3)
         refs_flat = lla.unsqueeze(1).expand(-1, P, -1).reshape(-1, 3)
         
-        lines_lla = torch.tensor(location_utils.convert_coordinates(
-            pts_flat, 'enu', 'lla', src_ref_lla=refs_flat
-        )).reshape(N, P, 3)
+        lines_lla = location_utils.convert_coordinates(
+            pts_flat, 'enu', 'lla', src_ref_lla=refs_flat, output_type='tensor'
+        ).reshape(N, P, 3)
 
         vals, val_type = self._process_values(values)
         self._layers.append({
             'type': 'lines', 'lines_lla': lines_lla.cpu(), 'values': vals, 'val_type': val_type,
             'label': label, 'color': color, 'cmap': cmap, 'opacity': opacity,
-            'cbar_title': colorbar_title if colorbar_title else label
+            'cbar_title': colorbar_title if colorbar_title else label,
+            'color_by_value': color_by_value
         })
 
     def _get_ellipse_points(self, cov_batch: torch.Tensor, sigma: float = 3.0, num_points: int = 30) -> torch.Tensor:
@@ -323,7 +328,12 @@ class LocationPlotter:
                  else: gl_v = layer['values']
                  v_min_global, v_max_global = gl_v.min(), gl_v.max()
 
+             do_gradient_lines = False
              if layer['type'] == 'lines' and layer['values'] is not None:
+                 do_gradient_lines = True
+                 if 'color_by_value' in layer and not layer['color_by_value']: do_gradient_lines = False
+
+             if do_gradient_lines:
                  num_bins = 20
                  norm_factor = (v_max_global - v_min_global) if v_max_global > v_min_global else 1.0
                  sample_colors = pcolors.sample_colorscale(layer['cmap'], np.linspace(0, 1, num_bins))
@@ -358,7 +368,10 @@ class LocationPlotter:
                      else:
                          trace['mode'] = 'markers'
                          m = dict(size=layer['size'], symbol=sym, opacity=layer['opacity'])
-                         if has_vals:
+                         do_color = has_vals
+                         if 'color_by_value' in layer: do_color = do_color and layer['color_by_value']
+                         
+                         if do_color:
                              v = vals.astype("datetime64[ns]").astype(float) if layer['val_type']=='date' else vals
                              m['color'] = v; m['colorscale'] = layer['cmap']; m['showscale'] = False
                              m['cmin'], m['cmax'] = float(v_min_global), float(v_max_global)
@@ -372,7 +385,10 @@ class LocationPlotter:
         # (Same as before)
         traces = []
         for layer in self._layers:
-            if layer['val_type'] in ['numeric', 'date'] and layer['values'] is not None:
+            do_color = (layer['val_type'] in ['numeric', 'date'] and layer['values'] is not None)
+            if 'color_by_value' in layer and not layer['color_by_value']: do_color = False
+            
+            if do_color:
                 cbar_dict = dict(title=layer['cbar_title'], x=1.02, len=0.8, y=0.3)
                 all_vals = layer['values']
                 if layer['val_type'] == 'date':
@@ -400,7 +416,9 @@ class LocationPlotter:
             else:
                 leg = dict(type='scattermap', lat=[None], lon=[None], name=name, legendgroup=name, showlegend=True, opacity=1)
                 rep_color = layer['color']
-                if layer['values'] is not None and layer['cmap']: rep_color = pcolors.sample_colorscale(layer['cmap'], [0.5])[0]
+                # Only use cmap color if do_color is True
+                if do_color and layer['cmap']: 
+                    rep_color = pcolors.sample_colorscale(layer['cmap'], [0.5])[0]
                 if layer['type'] == 'lines': leg['mode'] = 'lines'; leg['line']=dict(color=rep_color, width=2)
                 elif sym in ['cross', 'x']: leg['mode']='text'; leg['text']=['x']; leg['textfont']=dict(size=layer['size'], color=rep_color)
                 else: leg['mode']='markers'; leg['marker']=dict(size=layer['size'], color=rep_color, symbol=sym)
