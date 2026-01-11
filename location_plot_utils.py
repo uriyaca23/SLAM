@@ -115,6 +115,7 @@ class LocationPlotter:
             'type': 'points',
             'lat': lla[:, 0].numpy(),
             'lon': lla[:, 1].numpy(),
+            'alt': lla[:, 2].numpy(),
             'timestep_values': time_vals,
             'timestep_type': time_type,
             'categorical_values': cat_vals,
@@ -304,36 +305,122 @@ class LocationPlotter:
             type_to_use = layer.get('categorical_type', 'none')
         
         # Fallback to Name mode if data missing for requested mode
-        if mode != 'name' and vals_to_use is None:
-             pass 
+        if mode != 'name' and (vals_to_use is None or len(vals_to_use) == 0):
+             return self._generate_trace_data(layer, 'name', global_clim, start_idx, end_idx, is_frame)
 
         # Slice Data
-        def flatten_lines(lines_tensor):
-            if lines_tensor.numel() == 0: return [], []
+        def flatten_lines_data(lines_tensor, aux_vals_list=None):
+            # lines_tensor: (N, P, 3) or (N, P, 2)
+            # aux_vals_list: list of arrays (N,), to be expanded to (N, P)
+            if lines_tensor.numel() == 0: return [], [], [], [] if aux_vals_list else []
+            
             arr = lines_tensor.numpy()
-            N, P, _ = arr.shape
-            padded = np.full((N, P+1, 2), np.nan)
-            padded[:, :P, :] = arr[:, :, :2] 
-            flat = padded.reshape(-1, 2)
+            N, P, D = arr.shape
+            
+            # Pad with NaN for line breaks (N, P+1, D)
+            padded = np.full((N, P+1, D), np.nan)
+            padded[:, :P, :] = arr
+            flat = padded.reshape(-1, D)
+            
             flat_obj = flat.astype(object)
             mask = np.isnan(flat); flat_obj[mask] = None
-            return flat_obj[:, 0].tolist(), flat_obj[:, 1].tolist()
             
+            f_lat = flat_obj[:, 0].tolist()
+            f_lon = flat_obj[:, 1].tolist()
+            f_alt = flat_obj[:, 2].tolist() if D > 2 else [0]*len(f_lat)
+            
+            # Handle Aux Vals (Timestep, Category, etc) which are per-line (N,)
+            # Expand to (N, P+1) then flatten
+            flat_aux = []
+            if aux_vals_list:
+                for vals in aux_vals_list:
+                    if vals is None:
+                        flat_aux.append([None]*len(f_lat))
+                        continue
+                        
+                    # vals is (N,)
+                    # Expand to (N, P+1)
+                    # We repeat val for P times, then None for 1 time
+                    # v_exp = np.repeat(vals, P+1) # Incorrect, repeat needs to be structured
+                    
+                    v_padded = np.full((N, P+1), None, dtype=object)
+                    v_padded[:, :P] = vals[:, None] # Broadcast
+                    f_a = v_padded.reshape(-1).tolist()
+                    flat_aux.append(f_a)
+            
+            return f_lat, f_lon, f_alt, flat_aux
+
         def slice_arr(arr):
              if hasattr(arr, 'shape'):return arr[start_idx:end_idx] if arr.shape[0]>start_idx else arr[0:0]
              return arr
 
         if start_idx is not None:
-             if layer['type'] == 'points': lats = slice_arr(layer['lat']); lons = slice_arr(layer['lon'])
-             else: lines = slice_arr(layer['lines_lla'])
+             if layer['type'] == 'points': 
+                 lats = slice_arr(layer['lat'])
+                 lons = slice_arr(layer['lon'])
+                 alts = slice_arr(layer['alt'])
+             else: 
+                 lines = slice_arr(layer['lines_lla'])
              curr_vals = slice_arr(vals_to_use) if vals_to_use is not None else None
+             # also need other metadata for hover
+             curr_time = slice_arr(layer.get('timestep_values'))
+             curr_cat = slice_arr(layer.get('categorical_values'))
         else:
-             if layer['type'] == 'points': lats, lons = layer['lat'], layer['lon']
-             else: lines = layer['lines_lla']
+             if layer['type'] == 'points': 
+                 lats, lons, alts = layer['lat'], layer['lon'], layer['alt']
+             else: 
+                 lines = layer['lines_lla']
              curr_vals = vals_to_use
-        
+             curr_time = layer.get('timestep_values')
+             curr_cat = layer.get('categorical_values')
+             
+        # Helper to build Custom Data
+        # Helper to build Custom Data
+        # Returns: list of [Alt, TimeStr, CatStr] per point
+        # Lat/Lon are accessed via %{lat}, %{lon}
+        def build_customdata(lats, lons, alts, times, cats):
+            # Ensure inputs are lists or arrays of same length (including None)
+            N_pts = len(lats)
+             
+            # Format Times -> String (Safe/Robust)
+            # Reverting Float optimization due to D3 formatting issues (0NaN)
+            t_str = ["N/A"] * N_pts
+            if times is not None and len(times) == N_pts:
+                if hasattr(times, 'dtype') and (np.issubdtype(times.dtype, np.datetime64) or isinstance(times, pd.DatetimeIndex)):
+                     try: t_str = pd.Series(times).dt.strftime('%Y-%m-%d %H:%M:%S').fillna("N/A").tolist()
+                     except: pass
+                else:
+                     # Fallback
+                     tv = []
+                     for t in times:
+                         if t is None: tv.append("N/A")
+                         else:
+                             try: tv.append(pd.to_datetime(t).strftime('%Y-%m-%d %H:%M:%S'))
+                             except: tv.append(str(t))
+                     t_str = tv
+             
+            # Format Cats
+            c_str = []
+            if cats is not None and len(cats) == N_pts:
+                for c in cats: c_str.append(str(c) if c is not None else "N/A")
+            else: c_str = ["N/A"] * N_pts
+             
+            return np.column_stack((alts, t_str, c_str))
+
         traces = []
         name_prefix = layer['label']
+        
+        # Determine shared hover template
+        # customdata: [Alt, TimeStr, Cat]
+        # Time is already formatted string
+        
+        hover_temp = (
+            "<b>Lat:</b> %{lat:.6f}<br>"
+            "<b>Lon:</b> %{lon:.6f}<br>"
+            "<b>Alt:</b> %{customdata[0]:.1f} m<br>"
+            "<b>Time:</b> %{customdata[1]}<br>"
+            "<b>Cat:</b> %{customdata[2]}<extra></extra>"
+        )
         
         # --- MODE SPECIFIC GENERATION ---
         
@@ -345,10 +432,25 @@ class LocationPlotter:
              
              for i, cat in enumerate(unique_cats):
                  idxs = np.where(curr_vals == cat)[0] if curr_vals is not None else []
-                 t_lat, t_lon = [], []
+                 t_lat, t_lon, t_alt = [], [], []
+                 c_data = None
+                 
                  if len(idxs) > 0:
-                     if layer['type'] == 'points': t_lat, t_lon = lats[idxs], lons[idxs]
-                     else: t_lat, t_lon = flatten_lines(lines[idxs])
+                     if layer['type'] == 'points': 
+                         t_lat, t_lon, t_alt = lats[idxs], lons[idxs], alts[idxs]
+                         # Filter metadata for Points: just slice
+                         sub_times = curr_time[idxs] if curr_time is not None else None
+                         sub_cats = curr_cat[idxs] if curr_cat is not None else None
+                         c_data = build_customdata(t_lat, t_lon, t_alt, sub_times, sub_cats)
+                     else: 
+                         # Filter metadata for Lines: Expand!
+                         sub_lines = lines[idxs]
+                         sub_times_raw = curr_time[idxs] if curr_time is not None else None
+                         sub_cats_raw = curr_cat[idxs] if curr_cat is not None else None
+                         
+                         t_lat, t_lon, t_alt, aux = flatten_lines_data(sub_lines, [sub_times_raw, sub_cats_raw])
+                         # aux[0] is time, aux[1] is cat
+                         c_data = build_customdata(t_lat, t_lon, t_alt, aux[0], aux[1])
                  
                  sym = layer.get('symbol', 'circle')
                  
@@ -361,7 +463,9 @@ class LocationPlotter:
                      opacity=layer['opacity'],
                      name=leg_name, 
                      legendgroup=leg_name, # Group by specific cat so they toggle independently
-                     showlegend=True
+                     showlegend=True,
+                     customdata=c_data,
+                     hovertemplate=hover_temp
                  )
                  # Style
                  c = cat_colors[i]
@@ -385,10 +489,17 @@ class LocationPlotter:
                   slice_bins = np.floor((v_float - v_min) / norm_factor * (num_bins - 1e-6)).astype(int) if (curr_vals is not None and len(curr_vals)>0) else []
                   
                   for b in range(num_bins):
-                      t_lat, t_lon = [], []
+                      t_lat, t_lon, t_alt = [], [], []
+                      c_data = None
+                      
                       if curr_vals is not None and len(curr_vals) > 0:
                           idxs = np.where(slice_bins == b)[0]
-                          if len(idxs) > 0: t_lat, t_lon = flatten_lines(lines[idxs])
+                          if len(idxs) > 0: 
+                               sub_lines = lines[idxs]
+                               sub_times_raw = curr_time[idxs] if curr_time is not None else None
+                               sub_cats_raw = curr_cat[idxs] if curr_cat is not None else None
+                               t_lat, t_lon, t_alt, aux = flatten_lines_data(sub_lines, [sub_times_raw, sub_cats_raw])
+                               c_data = build_customdata(t_lat, t_lon, t_alt, aux[0], aux[1])
                       
                       # Force legend item for first bin even if empty
                       show_leg = (b == 0)
@@ -398,14 +509,20 @@ class LocationPlotter:
                       trace = dict(
                           type='scattermap', lat=t_lat, lon=t_lon, mode='lines',
                           line=dict(color=sample_colors[b], width=2), 
-                          opacity=layer['opacity'], hoverinfo='skip',
-                          legendgroup=name_prefix, name=name_prefix, showlegend=show_leg
+                          opacity=layer['opacity'], hoverinfo='all',
+                          legendgroup=name_prefix, name=name_prefix, showlegend=show_leg,
+                          customdata=c_data,
+                          hovertemplate=hover_temp
                       )
                       traces.append(trace)
              else:
                   # Scatter (Points) with ColorAxis
-                  t_lat, t_lon = [], []
-                  if lats.shape[0] > 0: t_lat, t_lon = lats, lons
+                  t_lat, t_lon, t_alt = [], [], []
+                  c_data = None
+                  
+                  if lats.shape[0] > 0: 
+                        t_lat, t_lon, t_alt = lats, lons, alts
+                        c_data = build_customdata(t_lat, t_lon, t_alt, curr_time, curr_cat)
                   
                   sym = layer.get('symbol', 'circle')
                   if sym in ['cross', 'x']:
@@ -429,21 +546,31 @@ class LocationPlotter:
                   trace['name'] = name_prefix
                   trace['legendgroup'] = name_prefix
                   trace['showlegend'] = True
+                  trace['customdata'] = c_data
+                  trace['hovertemplate'] = hover_temp
                   traces.append(trace)
 
         else:
              # Name Mode (Default)
              if mode == 'name':
-                 t_lat, t_lon = [], []
+                 t_lat, t_lon, t_alt = [], [], []
+                 c_data = None
+                 
                  if layer['type'] == 'lines': 
-                     if lines.shape[0] > 0: t_lat, t_lon = flatten_lines(lines)
+                     if lines.shape[0] > 0: 
+                         t_lat, t_lon, t_alt, aux = flatten_lines_data(lines, [curr_time, curr_cat])
+                         c_data = build_customdata(t_lat, t_lon, t_alt, aux[0], aux[1])
                  else: 
-                     if lats.shape[0] > 0: t_lat, t_lon = lats, lons
+                     if lats.shape[0] > 0: 
+                         t_lat, t_lon, t_alt = lats, lons, alts
+                         c_data = build_customdata(t_lat, t_lon, t_alt, curr_time, curr_cat)
                  
                  trace = dict(
                      type='scattermap', lat=t_lat, lon=t_lon, 
                      opacity=layer['opacity'],
-                     name=name_prefix, legendgroup=name_prefix, showlegend=True
+                     name=name_prefix, legendgroup=name_prefix, showlegend=True,
+                     customdata=c_data,
+                     hovertemplate=hover_temp
                  )
                  
                  if layer['type'] == 'lines':
@@ -494,7 +621,16 @@ class LocationPlotter:
             showscale=True
         )
         if is_date_axis:
-             cbar_args['colorbar']['tickformat'] = '%Y-%m-%d\n%H:%M:%S'
+             # Manually generate ticks for dates to ensure proper display on coloraxis
+             # global_min/max are in ns (float)
+             # Generate 6 ticks
+             tick_vals_float = np.linspace(global_min, global_max, 6)
+             tick_text = pd.to_datetime(tick_vals_float, unit='ns').strftime('%Y-%m-%d\n%H:%M:%S').tolist()
+             
+             cbar_args['colorbar']['tickmode'] = 'array'
+             cbar_args['colorbar']['tickvals'] = tick_vals_float
+             cbar_args['colorbar']['ticktext'] = tick_text
+             # cbar_args['colorbar']['tickformat'] = '%Y-%m-%d\n%H:%M:%S' # Redundant if using manual ticks but safe to check
 
         self.fig.update_layout(coloraxis=cbar_args)
         

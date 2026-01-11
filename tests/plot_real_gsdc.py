@@ -90,6 +90,8 @@ def plot_real_gsdc():
 
     print(f"Plotting {len(gt_coords)} GT points and {len(gnss_lla)} GNSS points (Full Resolution)...")
     
+    # ... (Data Loading as before) ...
+    
     # ---------------------------------------------------------
     # Derive Velocities & Covariances
     # ---------------------------------------------------------
@@ -117,114 +119,109 @@ def plot_real_gsdc():
     gnss_pos_diff = gnss_ecef[1:] - gnss_ecef[:-1]
     gnss_time_diff = (gnss_time[1:] - gnss_time[:-1]) / 1000.0
     gnss_time_diff[gnss_time_diff == 0] = 1.0
-    # For derived velocity, the displacement IS the position difference (approx)
-    # But usually we want V = dP/dt. 
-    # User wants "length on map = vel * dt". 
-    # If we derived V = dP/dt, then V*dt = dP.
-    # So we can just use the position diff as the vector to plot!
-    # Pad last element
     gnss_disp_ecef = np.vstack([gnss_pos_diff, gnss_pos_diff[-1:]])
     gnss_displacement_tensor = torch.tensor(gnss_disp_ecef, dtype=torch.float64)
     
-    # ... (Plotter init same) ...
-    # Satellite Map URL from test_satellite_map.py
-    # SATELLITE_URL = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
     SATELLITE_URL = "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}"
 
-    print("Initializing Plotter...")
-    plotter = location_plot_utils.LocationPlotter(
-        title="Google Decimeter Challenge Real Data: Trajectory, Velocity & Covariance",
-        map_url=SATELLITE_URL, # Use satellite imagery
-        zoom=16,
-        use_slider=True,
-        slide_window=200, 
-        slide_step=20 
-    )
-    
     # Create Dummy Categorical Data for Testing
-    # E.g. "High Speed" vs "Low Speed"
     speed_cats = np.where(gt_speed > 5.0, 'High Speed', 'Low Speed')
 
-    print("Adding Ground Truth...")
-    plotter.add_points(
-        coords=gt_coords,
-        sys='lla',
-        timestep_values=gt_datetimes,
-        categorical_values=speed_cats,
-        label="Ground Truth",
-        color="lime", # Lighter green for satellite visibility
-        marker_size=6,
-        opacity=0.9,
-        color_by_value=False
-    )
-    
-    # Add GT Velocity
-    plotter.add_velocity_2d(
-        coords=gt_coords,
-        coords_sys='lla',
-        velocity=gt_displacement_tensor, # Passing displacement!
-        vel_sys='enu',
-        vel_ref_lla=gt_coords,
-        timestep_values=gt_datetimes,
-        categorical_values=speed_cats,
-        label="GT Velocity (Step Result)",
-        color="lime", # Match GT color
-        scale=1.0, # 1:1 scale with time-step displacement
-        opacity=0.8,
-        color_by_value=False
-    )
+    def run_plot(use_slider, filename_suffix):
+        print(f"\n--- Generating Plot: Slider={'ON' if use_slider else 'OFF'} ---")
+        plotter = location_plot_utils.LocationPlotter(
+            title=f"GSDC Real Data (Slider={use_slider})",
+            map_url=SATELLITE_URL,
+            zoom=16,
+            use_slider=use_slider,
+            slide_window=200, 
+            slide_step=20 
+        )
+        
+        print("Adding Ground Truth...")
+        plotter.add_points(
+            coords=gt_coords,
+            sys='lla',
+            timestep_values=gt_datetimes,
+            categorical_values=speed_cats,
+            label="Ground Truth",
+            color="lime", 
+            marker_size=6,
+            opacity=0.9,
+            color_by_value=False
+        )
+        
+        # Add GT Velocity
+        plotter.add_velocity_2d(
+            coords=gt_coords,
+            coords_sys='lla',
+            velocity=gt_displacement_tensor,
+            vel_sys='enu',
+            vel_ref_lla=gt_coords,
+            timestep_values=gt_datetimes,
+            categorical_values=speed_cats,
+            label="GT Velocity (Step Result)",
+            color="lime", 
+            scale=1.0, 
+            opacity=0.8,
+            color_by_value=False
+        )
 
-    # Add GT Covariance
-    plotter.add_covariance_2d(
-        coords=gt_coords,
-        coords_sys='lla',
-        covariance=gt_cov,
-        cov_sys='enu',
-        cov_ref_lla=gt_coords,
-        timestep_values=gt_datetimes,
-        categorical_values=speed_cats,
-        label="GT Uncertainty (90%)",
-        color="lime", # Match GT color
-        sigma=2.146, # 90% confidence for 2D Gaussian (Chi-square 2 dof)
-        opacity=0.3,
-        color_by_value=False
-    )
-    
-    print("Adding GNSS WLS Solution...")
-    plotter.add_points(
-        coords=gnss_lla,
-        sys='lla',
-        timestep_values=gnss_datetimes,
-        label="GNSS WLS",
-        color="red",
-        marker_size=5,
-        symbol="circle",
-        opacity=0.7,
-        color_by_value=False
-    )
-    
-    # Add GNSS Velocity
-    plotter.add_velocity_2d(
-        coords=gnss_lla,
-        coords_sys='lla',
-        velocity=gnss_displacement_tensor, # Passing displacement
-        vel_sys='ecef',
-        timestep_values=gnss_datetimes,
-        label="GNSS Velocity (Step Result)",
-        color="red", # Match GNSS color
-        scale=1.0,
-        opacity=0.6,
-        color_by_value=False
-    )
-    
-    filename = os.path.join(RESULTS_DIR, "real_gsdc_plot.html")
-    print(f"Saving to {filename}...")
-    plotter.save(filename)
-    
-    if os.path.exists(filename):
-        print(f"SUCCESS: Plot saved to {filename}")
-    else:
-        print("FAILURE: Plot not created.")
+        # Add GT Covariance
+        plotter.add_covariance_2d(
+            coords=gt_coords,
+            coords_sys='lla',
+            covariance=gt_cov,
+            cov_sys='enu',
+            cov_ref_lla=gt_coords,
+            timestep_values=gt_datetimes,
+            categorical_values=speed_cats,
+            label="GT Uncertainty (90%)",
+            color="lime",
+            sigma=2.146,
+            opacity=0.3,
+            color_by_value=False
+        )
+        
+        print("Adding GNSS WLS Solution...")
+        plotter.add_points(
+            coords=gnss_lla,
+            sys='lla',
+            timestep_values=gnss_datetimes,
+            label="GNSS WLS",
+            color="red",
+            marker_size=5,
+            symbol="circle",
+            opacity=0.7,
+            color_by_value=False
+        )
+        
+        # Add GNSS Velocity
+        plotter.add_velocity_2d(
+            coords=gnss_lla,
+            coords_sys='lla',
+            velocity=gnss_displacement_tensor,
+            vel_sys='ecef',
+            timestep_values=gnss_datetimes,
+            label="GNSS Velocity (Step Result)",
+            color="red",
+            scale=1.0,
+            opacity=0.6,
+            color_by_value=False
+        )
+        
+        filename = os.path.join(RESULTS_DIR, filename_suffix)
+        print(f"Saving to {filename}...")
+        plotter.save(filename)
+        
+        if os.path.exists(filename):
+            print(f"SUCCESS: Plot saved to {filename}")
+        else:
+            print("FAILURE: Plot not created.")
+
+    # Run BOTH versions
+    run_plot(use_slider=True, filename_suffix="real_gsdc_plot.html")
+    run_plot(use_slider=False, filename_suffix="real_gsdc_plot_no_slider.html")
 
 if __name__ == "__main__":
     plot_real_gsdc()
