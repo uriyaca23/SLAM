@@ -46,7 +46,7 @@ def check_process_values():
     plotter.add_points(
          coords=torch.zeros((3,3)),
          sys='lla',
-         values=dt_vals,
+         timestep_values=dt_vals,
          label="Test"
     )
     

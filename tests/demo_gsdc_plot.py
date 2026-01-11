@@ -72,7 +72,7 @@ def test_gsdc_plotting():
     plotter.add_points(
         coords=gt_coords,
         sys='lla',
-        values=timestamps,
+        timestep_values=timestamps,
         label="Ground Truth",
         color="green",
         marker_size=5,
@@ -83,7 +83,7 @@ def test_gsdc_plotting():
     plotter.add_points(
         coords=gnss_coords,
         sys='lla',
-        values=timestamps,
+        timestep_values=timestamps,
         label="GNSS Measurements",
         color="red",
         marker_size=5,

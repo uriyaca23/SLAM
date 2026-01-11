@@ -24,7 +24,7 @@ def debug_lines():
         velocity=vel_vec,
         color="lime",
         color_by_value=False,
-        values=values,
+        timestep_values=values,
         vel_ref_lla=coords # Required for ENU
     )
     

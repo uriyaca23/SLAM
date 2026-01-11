@@ -145,7 +145,7 @@ def plot_real_gsdc():
     plotter.add_points(
         coords=gt_coords,
         sys='lla',
-        values=gt_datetimes,
+        timestep_values=gt_datetimes,
         label="Ground Truth",
         color="lime", # Lighter green for satellite visibility
         marker_size=6,
@@ -160,7 +160,7 @@ def plot_real_gsdc():
         velocity=gt_displacement_tensor, # Passing displacement!
         vel_sys='enu',
         vel_ref_lla=gt_coords,
-        values=gt_datetimes,
+        timestep_values=gt_datetimes,
         label="GT Velocity (Step Result)",
         color="lime", # Match GT color
         scale=1.0, # 1:1 scale with time-step displacement
@@ -175,7 +175,7 @@ def plot_real_gsdc():
         covariance=gt_cov,
         cov_sys='enu',
         cov_ref_lla=gt_coords,
-        values=gt_datetimes,
+        timestep_values=gt_datetimes,
         label="GT Uncertainty (90%)",
         color="lime", # Match GT color
         sigma=2.146, # 90% confidence for 2D Gaussian (Chi-square 2 dof)
@@ -187,7 +187,7 @@ def plot_real_gsdc():
     plotter.add_points(
         coords=gnss_lla,
         sys='lla',
-        values=gnss_datetimes,
+        timestep_values=gnss_datetimes,
         label="GNSS WLS",
         color="red",
         marker_size=5,
@@ -202,7 +202,7 @@ def plot_real_gsdc():
         coords_sys='lla',
         velocity=gnss_displacement_tensor, # Passing displacement
         vel_sys='ecef',
-        values=gnss_datetimes,
+        timestep_values=gnss_datetimes,
         label="GNSS Velocity (Step Result)",
         color="red", # Match GNSS color
         scale=1.0,

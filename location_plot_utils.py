@@ -72,14 +72,21 @@ class LocationPlotter:
             self.map_layout['map']['zoom'] = 14
             self._center_updated = True
 
-    def _process_values(self, values: Any) -> Tuple[np.ndarray, str]:
+    def _process_values(self, values: Any) -> Tuple[Any, str]:
+        # Return raw values and their detected type 'numeric', 'date', 'categorical', or 'none'
         if values is None: return None, 'none'
         if isinstance(values, torch.Tensor): vals = values.detach().cpu().numpy()
         else: vals = np.array(values)
+        
+        if vals.size == 0: return vals, 'none'
+
         if np.issubdtype(vals.dtype, np.number): return vals, 'numeric'
-        elif np.issubdtype(vals.dtype, np.datetime64) or (vals.size > 0 and hasattr(vals[0], 'isoformat')):
-            try: return vals.astype("datetime64[ns]"), 'date'
+        elif np.issubdtype(vals.dtype, np.datetime64) or hasattr(vals.flat[0], 'isoformat'):
+            try: 
+                # Try to cast to datetime64[ns]
+                return pd.to_datetime(vals).to_numpy(dtype="datetime64[ns]"), 'date'
             except: pass
+        
         return vals, 'categorical'
 
     def add_points(
@@ -87,7 +94,8 @@ class LocationPlotter:
         coords: Any,
         sys: str = 'lla',
         ref_lla: Optional[Any] = None,
-        values: Optional[Any] = None,
+        timestep_values: Optional[Any] = None,
+        categorical_values: Optional[Any] = None,
         label: str = "Points",
         color: str = "blue",
         cmap: str = "Viridis",
@@ -99,14 +107,18 @@ class LocationPlotter:
     ):
         lla = self._to_lla(coords, sys, ref_lla)
         self._update_center(lla)
-        vals, val_type = self._process_values(values)
+        
+        time_vals, time_type = self._process_values(timestep_values)
+        cat_vals, cat_type = self._process_values(categorical_values)
         
         self._layers.append({
             'type': 'points',
             'lat': lla[:, 0].numpy(),
             'lon': lla[:, 1].numpy(),
-            'values': vals,
-            'val_type': val_type,
+            'timestep_values': time_vals,
+            'timestep_type': time_type,
+            'categorical_values': cat_vals,
+            'categorical_type': cat_type,
             'label': label,
             'color': color,
             'cmap': cmap,
@@ -125,7 +137,8 @@ class LocationPlotter:
         coords_sys: str = 'lla',
         cov_ref_lla: Optional[Any] = None,
         coords_ref_lla: Optional[Any] = None,
-        values: Optional[Any] = None,
+        timestep_values: Optional[Any] = None,
+        categorical_values: Optional[Any] = None,
         label: str = "Covariance",
         sigma: float = 3.0,
         color: str = "red",
@@ -170,13 +183,16 @@ class LocationPlotter:
             output_type='tensor'
         ).reshape(N, P, 3)
         
-        vals, val_type = self._process_values(values)
+        time_vals, time_type = self._process_values(timestep_values)
+        cat_vals, cat_type = self._process_values(categorical_values)
         
         self._layers.append({
             'type': 'lines',
             'lines_lla': ellipse_lla.cpu(),
-            'values': vals,
-            'val_type': val_type,
+            'timestep_values': time_vals,
+            'timestep_type': time_type,
+            'categorical_values': cat_vals,
+            'categorical_type': cat_type,
             'label': label,
             'color': color,
             'cmap': cmap,
@@ -193,7 +209,8 @@ class LocationPlotter:
         coords_sys: str = 'lla',
         vel_ref_lla: Optional[Any] = None,
         coords_ref_lla: Optional[Any] = None,
-        values: Optional[Any] = None,
+        timestep_values: Optional[Any] = None,
+        categorical_values: Optional[Any] = None,
         label: str = "Velocity",
         scale: float = 1.0,
         color: str = "green",
@@ -249,9 +266,13 @@ class LocationPlotter:
             pts_flat, 'enu', 'lla', src_ref_lla=refs_flat, output_type='tensor'
         ).reshape(N, P, 3)
 
-        vals, val_type = self._process_values(values)
+        time_vals, time_type = self._process_values(timestep_values)
+        cat_vals, cat_type = self._process_values(categorical_values)
+        
         self._layers.append({
-            'type': 'lines', 'lines_lla': lines_lla.cpu(), 'values': vals, 'val_type': val_type,
+            'type': 'lines', 'lines_lla': lines_lla.cpu(), 
+            'timestep_values': time_vals, 'timestep_type': time_type,
+            'categorical_values': cat_vals, 'categorical_type': cat_type,
             'label': label, 'color': color, 'cmap': cmap, 'opacity': opacity,
             'cbar_title': colorbar_title if colorbar_title else label,
             'color_by_value': color_by_value
@@ -271,8 +292,29 @@ class LocationPlotter:
         return ellipse_points
 
     # --- Retain Logic ---
-    def _generate_trace_data(self, layer, start_idx=None, end_idx=None, is_frame=False):
-        # (Same as before)
+    def _generate_trace_data(self, layer, mode, global_clim=None, start_idx=None, end_idx=None, is_frame=False):
+        # Determine Values for Mode
+        vals_to_use = None
+        type_to_use = 'none'
+        
+        if mode == 'timestep':
+            vals_to_use = layer.get('timestep_values')
+            type_to_use = layer.get('timestep_type', 'none')
+        elif mode == 'categorical':
+            vals_to_use = layer.get('categorical_values')
+            type_to_use = layer.get('categorical_type', 'none')
+        
+        # Fallback to Name mode if data missing for requested mode
+        if mode != 'name' and vals_to_use is None:
+             # Effectively return empty traces for this mode so it doesn't show garbage
+             # But we must preserve TRACE COUNT for frames consistency?
+             # E.g. if categorical has 3 categories globally, we need 3 empty traces.
+             # If timestep lines, we need 20 empty traces.
+             # This is tricky if 'vals_to_use' is None, we don't know categories.
+             # Easier assumption: If no data, we yield "empty" traces based on GLOBAL layer properties?
+             pass 
+
+        # Slice Data
         def flatten_lines(lines_tensor):
             if lines_tensor.numel() == 0: return [], []
             arr = lines_tensor.numpy()
@@ -284,185 +326,334 @@ class LocationPlotter:
             mask = np.isnan(flat); flat_obj[mask] = None
             return flat_obj[:, 0].tolist(), flat_obj[:, 1].tolist()
             
+        def slice_arr(arr):
+             if hasattr(arr, 'shape'):return arr[start_idx:end_idx] if arr.shape[0]>start_idx else arr[0:0]
+             return arr
+
         if start_idx is not None:
-             def slice_arr(arr):
-                 if hasattr(arr, 'shape'):return arr[start_idx:end_idx] if arr.shape[0]>start_idx else arr[0:0]
-                 return arr
              if layer['type'] == 'points': lats = slice_arr(layer['lat']); lons = slice_arr(layer['lon'])
              else: lines = slice_arr(layer['lines_lla'])
-             vals = layer['values']; 
-             if vals is not None: vals = slice_arr(vals)
+             curr_vals = slice_arr(vals_to_use) if vals_to_use is not None else None
         else:
              if layer['type'] == 'points': lats, lons = layer['lat'], layer['lon']
              else: lines = layer['lines_lla']
-             vals = layer['values']
-
-        traces = []
-        name_prefix = layer['label']
+             curr_vals = vals_to_use
         
-        if layer['val_type'] == 'categorical' and layer['values'] is not None:
-             all_vals = layer['values']
-             unique_cats = np.unique(all_vals)
+        traces = []
+        name_prefix = layer['label'] # No suffix for Name mode
+        
+        # --- MODE SPECIFIC GENERATION ---
+        
+        if mode == 'categorical' and vals_to_use is not None:
+             # Use ALL values to determine categories structure
+             all_vals = layer.get('categorical_values')
+             unique_cats = np.unique(all_vals) if all_vals is not None else np.array([])
              cat_colors = pcolors.sample_colorscale(layer['cmap'], np.linspace(0, 1, len(unique_cats)))
+             
              for i, cat in enumerate(unique_cats):
-                 idxs = np.where(vals == cat)[0] if vals is not None else []
+                 idxs = np.where(curr_vals == cat)[0] if curr_vals is not None else []
                  t_lat, t_lon = [], []
                  if len(idxs) > 0:
                      if layer['type'] == 'points': t_lat, t_lon = lats[idxs], lons[idxs]
                      else: t_lat, t_lon = flatten_lines(lines[idxs])
+                 
                  sym = layer.get('symbol', 'circle')
                  trace = dict(
                      type='scattermap', lat=t_lat, lon=t_lon,
                      mode='lines' if layer['type']=='lines' else ('text' if sym in ['cross','x'] else 'markers'),
-                     name=f"{name_prefix} - {cat}", legendgroup=f"{name_prefix}_{cat}", showlegend=False, opacity=layer['opacity']
+                     showlegend=False, opacity=layer['opacity'],
+                     name=f"{name_prefix} - {cat}", legendgroup=f"{name_prefix}_{cat}"
                  )
-                 if layer['type'] == 'lines': trace['line'] = dict(color=cat_colors[i], width=2)
-                 elif sym in ['cross', 'x']: trace['text']=['x']*len(t_lat); trace['textfont']=dict(size=layer['size'], color=cat_colors[i])
-                 else: trace['marker'] = dict(size=layer['size'], color=cat_colors[i], symbol=sym)
+                 # Style
+                 c = cat_colors[i]
+                 if layer['type'] == 'lines': trace['line'] = dict(color=c, width=2)
+                 elif sym in ['cross', 'x']: trace['text']=['x']*len(t_lat); trace['textfont']=dict(size=layer['size'], color=c)
+                 else: trace['marker'] = dict(size=layer['size'], color=c, symbol=sym)
                  traces.append(trace)
-        else:
-             has_vals = (vals is not None)
-             v_min_global, v_max_global = 0.0, 1.0
-             if layer['values'] is not None:
-                 if layer['val_type'] == 'date': gl_v = layer['values'].astype("datetime64[ns]").astype(float)
-                 else: gl_v = layer['values']
-                 v_min_global, v_max_global = gl_v.min(), gl_v.max()
-
-             do_gradient_lines = False
-             if layer['type'] == 'lines' and layer['values'] is not None:
-                 do_gradient_lines = True
-                 if 'color_by_value' in layer and not layer['color_by_value']: do_gradient_lines = False
-
+        
+        elif mode == 'timestep' and vals_to_use is not None:
+             # Gradient Line or Color Axis Marker
+             do_gradient_lines = (layer['type'] == 'lines')
+             v_min, v_max = global_clim if global_clim else (0.0, 1.0)
+             
              if do_gradient_lines:
-                 num_bins = 20
-                 norm_factor = (v_max_global - v_min_global) if v_max_global > v_min_global else 1.0
-                 sample_colors = pcolors.sample_colorscale(layer['cmap'], np.linspace(0, 1, num_bins))
-                 curr_vals = vals.astype("datetime64[ns]").astype(float) if (has_vals and layer['val_type']=='date') else vals
-                 slice_bins = np.floor((curr_vals - v_min_global) / norm_factor * (num_bins - 1e-6)).astype(int) if len(curr_vals)>0 else []
-                 for b in range(num_bins):
-                     t_lat, t_lon = [], []
-                     if has_vals and len(vals) > 0:
-                         idxs = np.where(slice_bins == b)[0]
-                         if len(idxs) > 0: t_lat, t_lon = flatten_lines(lines[idxs])
-                     traces.append(dict(
-                         type='scattermap', lat=t_lat, lon=t_lon, mode='lines',
-                         line=dict(color=sample_colors[b], width=2), name=name_prefix, legendgroup=name_prefix, showlegend=False, opacity=layer['opacity']
-                     ))
+                  num_bins = 20
+                  norm_factor = (v_max - v_min) if v_max > v_min else 1.0
+                  sample_colors = pcolors.sample_colorscale(layer['cmap'], np.linspace(0, 1, num_bins))
+                  
+                  v_float = curr_vals.astype("datetime64[ns]").astype(float) if (type_to_use=='date') else curr_vals.astype(float)
+                  # Binning relative to Global Range
+                  slice_bins = np.floor((v_float - v_min) / norm_factor * (num_bins - 1e-6)).astype(int) if (curr_vals is not None and len(curr_vals)>0) else []
+                  
+                  for b in range(num_bins):
+                      t_lat, t_lon = [], []
+                      if curr_vals is not None and len(curr_vals) > 0:
+                          idxs = np.where(slice_bins == b)[0]
+                          if len(idxs) > 0: t_lat, t_lon = flatten_lines(lines[idxs])
+                      traces.append(dict(
+                          type='scattermap', lat=t_lat, lon=t_lon, mode='lines',
+                          line=dict(color=sample_colors[b], width=2), 
+                          showlegend=False, opacity=layer['opacity'], hoverinfo='skip'
+                      ))
              else:
+                  # Scatter (Points) with ColorAxis
+                  t_lat, t_lon = [], []
+                  if lats.shape[0] > 0: t_lat, t_lon = lats, lons
+                  
+                  sym = layer.get('symbol', 'circle')
+                  if sym in ['cross', 'x']:
+                      trace = dict(
+                          type='scattermap', lat=t_lat, lon=t_lon, mode='text', text=['x']*len(t_lat),
+                          showlegend=False, opacity=layer['opacity']
+                      )
+                      v_float = curr_vals.astype("datetime64[ns]").astype(float) if (type_to_use=='date') else curr_vals
+                      trace['textfont'] = dict(size=layer['size'], color=v_float, coloraxis='coloraxis')
+                  else:
+                      trace = dict(
+                           type='scattermap', lat=t_lat, lon=t_lon, mode='markers',
+                           showlegend=False, opacity=layer['opacity']
+                      )
+                      v_float = curr_vals.astype("datetime64[ns]").astype(float) if (type_to_use=='date') else curr_vals
+                      trace['marker'] = dict(
+                          size=layer['size'], symbol=sym,
+                          color=v_float, coloraxis='coloraxis'
+                      )
+                  traces.append(trace)
+
+        else:
+             # Name Mode (Default fallback)
+             # If "fallback" logic is triggered (e.g. asking for categorical but none exists),
+             # we return Empty Traces matching structure if we tracked structure, 
+             # OR we return a Name trace?
+             # Frame consistency requires same NUMBER of traces.
+             # If we are in 'categorical' mode but this layer has no categories, we should ideally produce 0 traces?
+             # BUT if we produced 0 traces for frame 0, and 0 for frame 1, that matches.
+             # The problem is mixing layers.
+             # If Layer A has categories, Layer B does not.
+             # In Categorical Mode: Layer A shows traces. Layer B shows nothing? 
+             # User said: "timestep and categorical are optional inputs, and if inserted they should be added to a switched button"
+             # This implies layers without them just don't participate or show default?
+             # Let's assume they show NOTHING in that specific mode if data is missing.
+             
+             if mode == 'name':
                  t_lat, t_lon = [], []
-                 if layer['type'] == 'lines': t_lat, t_lon = flatten_lines(lines)
+                 if layer['type'] == 'lines': 
+                     if lines.shape[0] > 0: t_lat, t_lon = flatten_lines(lines)
                  else: 
                      if lats.shape[0] > 0: t_lat, t_lon = lats, lons
-                 trace = dict(type='scattermap', lat=t_lat, lon=t_lon, name=name_prefix, legendgroup=name_prefix, showlegend=False, opacity=layer['opacity'])
+                 
+                 trace = dict(type='scattermap', lat=t_lat, lon=t_lon, showlegend=False, opacity=layer['opacity'])
                  if layer['type'] == 'lines':
                      trace['mode'] = 'lines'; trace['line'] = dict(color=layer['color'], width=2)
                  else:
                      sym = layer.get('symbol', 'circle')
                      if sym in ['cross', 'x']:
                          trace['mode'] = 'text'; trace['text'] = ['x']*len(t_lat)
-                         tf = dict(size=layer['size'], color=layer['color'])
-                         if has_vals:
-                             v = vals.astype("datetime64[ns]").astype(float) if layer['val_type']=='date' else vals
-                             tf['color'] = v
-                         trace['textfont'] = tf
+                         trace['textfont'] = dict(size=layer['size'], color=layer['color'])
                      else:
                          trace['mode'] = 'markers'
-                         m = dict(size=layer['size'], symbol=sym, opacity=layer['opacity'])
-                         do_color = has_vals
-                         if 'color_by_value' in layer: do_color = do_color and layer['color_by_value']
-                         
-                         if do_color:
-                             v = vals.astype("datetime64[ns]").astype(float) if layer['val_type']=='date' else vals
-                             m['color'] = v; m['colorscale'] = layer['cmap']; m['showscale'] = False
-                             m['cmin'], m['cmax'] = float(v_min_global), float(v_max_global)
-                             m['cauto'], m['autocolorscale'] = False, False
-                         else: m['color'] = layer['color']
-                         trace['marker'] = m
+                         trace['marker'] = dict(size=layer['size'], color=layer['color'], symbol=sym)
                  traces.append(trace)
+
         return traces
 
     def _get_static_traces(self):
-        # (Same as before)
+        # Only generating "Name" style legend items (per User Req)
         traces = []
         for layer in self._layers:
-            do_color = (layer['val_type'] in ['numeric', 'date'] and layer['values'] is not None)
-            if 'color_by_value' in layer and not layer['color_by_value']: do_color = False
-            
-            if do_color:
-                cbar_dict = dict(title=layer['cbar_title'], x=1.02, len=0.8, y=0.3)
-                all_vals = layer['values']
-                if layer['val_type'] == 'date':
-                    cbar_dict['tickformat'] = '%Y-%m-%d\n%H:%M:%S'
-                    v_f = all_vals.astype("datetime64[ns]").astype(float)
-                    cbar_vals = [v_f.min(), v_f.max()]
-                else: cbar_vals = [all_vals.min(), all_vals.max()]
-                traces.append(dict(
-                    type='scattermap', lat=[None], lon=[None], mode='markers',
-                    marker=dict(size=0, color=cbar_vals, colorscale=layer['cmap'], showscale=True, colorbar=cbar_dict),
-                    showlegend=False, hoverinfo='skip'
-                ))
-            
             name = layer['label']
             sym = layer.get('symbol', 'circle')
-            if layer['val_type'] == 'categorical' and layer['values'] is not None:
-                unique_cats = np.unique(layer['values'])
-                cat_colors = pcolors.sample_colorscale(layer['cmap'], np.linspace(0, 1, len(unique_cats)))
-                for i, cat in enumerate(unique_cats):
-                    leg = dict(type='scattermap', lat=[None], lon=[None], name=f"{name} - {cat}", legendgroup=f"{name}_{cat}", showlegend=True, opacity=1)
-                    if layer['type'] == 'lines': leg['mode'] = 'lines'; leg['line'] = dict(color=cat_colors[i], width=2)
-                    elif sym in ['cross', 'x']: leg['mode']='text'; leg['text']=['x']; leg['textfont']=dict(size=layer['size'], color=cat_colors[i])
-                    else: leg['mode']='markers'; leg['marker']=dict(size=layer['size'], color=cat_colors[i], symbol=sym)
-                    traces.append(leg)
-            else:
-                leg = dict(type='scattermap', lat=[None], lon=[None], name=name, legendgroup=name, showlegend=True, opacity=1)
-                rep_color = layer['color']
-                # Only use cmap color if do_color is True
-                if do_color and layer['cmap']: 
-                    rep_color = pcolors.sample_colorscale(layer['cmap'], [0.5])[0]
-                if layer['type'] == 'lines': leg['mode'] = 'lines'; leg['line']=dict(color=rep_color, width=2)
-                elif sym in ['cross', 'x']: leg['mode']='text'; leg['text']=['x']; leg['textfont']=dict(size=layer['size'], color=rep_color)
-                else: leg['mode']='markers'; leg['marker']=dict(size=layer['size'], color=rep_color, symbol=sym)
-                traces.append(leg)
+            
+            trace = dict(
+                type='scattermap', lat=[None], lon=[None], 
+                name=name, legendgroup=name, showlegend=True, opacity=1
+            )
+            color = layer['color']
+            
+            if layer['type'] == 'lines': 
+                trace['mode'] = 'lines'
+                trace['line'] = dict(color=color, width=2)
+            elif sym in ['cross', 'x']: 
+                trace['mode']='text'; trace['text']=['x']
+                trace['textfont']=dict(size=layer['size'], color=color)
+            else: 
+                trace['mode']='markers'
+                trace['marker']=dict(size=layer['size'], color=color, symbol=sym)
+            traces.append(trace)
         return traces
 
     def _build_plot(self):
         self.fig.update_layout(self.map_layout)
+        
+        # 1. Calculate Global Timestep Range
+        global_min, global_max = float('inf'), float('-inf')
+        has_time_data = False
+        is_date_axis = False
+        
+        for layer in self._layers:
+            # Check timestep vals
+            tv = layer.get('timestep_values')
+            tt = layer.get('timestep_type')
+            
+            if tv is not None and len(tv) > 0:
+                has_time_data = True
+                if tt == 'date':
+                    is_date_axis = True
+                    # Actually datetime64[ns] cast to float gives ns. This is fine for min/max
+                    vf = tv.astype("datetime64[ns]").astype(float)
+                else:
+                    vf = tv.astype(float)
+                global_min = min(global_min, vf.min())
+                global_max = max(global_max, vf.max())
+
+        if not has_time_data: global_min, global_max = 0, 1
+        
+        # Setup ColorAxis
+        cbar_args = dict(
+            colorscale="Viridis", 
+            colorbar=dict(title="Value", x=1.02, len=0.8, y=0.3),
+            cmin=global_min, cmax=global_max,
+            showscale=True
+        )
+        if is_date_axis:
+             # Plotly coloraxis doesn't support date formatting automatically in the same way as tickformat?
+             # It acts as numeric. We might need tickvals/text if we want pretty dates.
+             # For now, let's just leave it numeric/raw or see if standard simple formatting works.
+             # Ideally we pass 'tickformat' to colorbar.
+             cbar_args['colorbar']['tickformat'] = '%Y-%m-%d\n%H:%M:%S'
+
+        self.fig.update_layout(coloraxis=cbar_args)
+        
+        # 2. Add Static Legend Traces (Always Visible)
         for t in self._get_static_traces(): self.fig.add_trace(t)
         
+        # 3. Generate Data Traces for All Modes
+        # Structure: [Static Traces] + [Name Traces] + [Timestep Traces] + [Categorical Traces]
+        # We need to track indices to toggle visibility.
+        
+        static_count = len(self._get_static_traces())
+        
+        traces_name = []
+        traces_time = []
+        traces_cat = []
+        
+        # Slice limits
         start_idx = 0 if self.use_slider else None
         end_idx = self.slide_window if self.use_slider else None
+        
         max_N = 0
-        date_vals = None
+        date_vals = None # For slider labels
+        
         for layer in self._layers:
             if layer['type']=='points': n=len(layer['lat'])
             else: n=layer['lines_lla'].shape[0]
             if n>max_N: max_N=n
-            if layer['val_type']=='date' and layer['values'] is not None and date_vals is None: date_vals=layer['values']
+            # Try to catch date vals for slider label from 'timestep' if available
+            tv = layer.get('timestep_values')
+            if tv is not None and date_vals is None: date_vals = tv
             
-        initial_traces = []
-        for layer in self._layers:
-            initial_traces.extend(self._generate_trace_data(layer, start_idx, min(end_idx, max_N) if end_idx else None))
-        for t in initial_traces: self.fig.add_trace(t)
+            # Name Mode
+            traces_name.extend(self._generate_trace_data(layer, 'name', None, start_idx, end_idx))
+            # Timestep Mode
+            traces_time.extend(self._generate_trace_data(layer, 'timestep', (global_min, global_max), start_idx, end_idx))
+            # Cat Mode
+            traces_cat.extend(self._generate_trace_data(layer, 'categorical', None, start_idx, end_idx))
+
+        # Add all to figure
+        # Default Visibility: Name = True, others = False
+        all_traces = traces_name + traces_time + traces_cat
         
+        # Indices relative to fig.data
+        # fig.data has [Static...] then we add [Name... Time... Cat...]
+        base_idx = static_count
+        name_range = range(base_idx, base_idx + len(traces_name))
+        time_range = range(base_idx + len(traces_name), base_idx + len(traces_name) + len(traces_time))
+        cat_range = range(base_idx + len(traces_name) + len(traces_time), base_idx + len(all_traces))
+        
+        for i, t in enumerate(traces_name): t['visible'] = True
+        for t in traces_time: t['visible'] = False
+        for t in traces_cat: t['visible'] = False
+        
+        for t in all_traces: self.fig.add_trace(t)
+        
+        # 4. Buttons
+        # We need to construct visibility arrays for the WHOLE fig.data
+        # Static traces (0 to static_count-1) -> Always True
+        total_traces = len(self.fig.data)
+        
+        def get_vis(active_range):
+            v = [True] * static_count # Static always visible
+            # Dynamic part
+            # Initialize all dynamic to False
+            dyn = [False] * (total_traces - static_count)
+            # Enable active range
+            for i in active_range:
+                if i >= static_count: dyn[i - static_count] = True
+            return v + dyn
+
+        buttons = [
+            dict(
+                label="Name",
+                method="update",
+                args=[{"visible": get_vis(name_range)}, {"coloraxis.showscale": False}]
+            ),
+            dict(
+                label="Timestep",
+                method="update",
+                args=[{"visible": get_vis(time_range)}, {"coloraxis.showscale": True}]
+            ),
+            dict(
+                label="Categorical",
+                method="update",
+                args=[{"visible": get_vis(cat_range)}, {"coloraxis.showscale": False}]
+            )
+        ]
+        
+        # 5. Frames (Slider)
         if self.use_slider and max_N > 0:
-            dynamic_indices = list(range(len(self.fig.data) - len(initial_traces), len(self.fig.data)))
             frames = []
             steps = []
+            
+            # Identify indices of dynamic traces in fig.data
+            # We must update ALL dynamic traces (Name, Time, Cat) in every frame 
+            # so that switching mode while paused/playing works correctly.
+            dynamic_indices = list(range(base_idx, total_traces))
+            
             for f_idx in range(0, max_N, self.slide_step):
-                frame_data = []
-                for layer in self._layers:
-                    frame_data.extend(self._generate_trace_data(layer, f_idx, min(f_idx+self.slide_window, max_N), is_frame=True))
-                frames.append(go.Frame(data=frame_data, traces=dynamic_indices, name=str(f_idx)))
+                # Generate data for ALL modes for this frame
+                frame_traces = []
+                w_start, w_end = f_idx, min(f_idx + self.slide_window, max_N)
+                
+                # We simply concat the mode generations exactly as we did for initial execution
+                for layer in self._layers: frame_traces.extend(self._generate_trace_data(layer, 'name', None, w_start, w_end))
+                for layer in self._layers: frame_traces.extend(self._generate_trace_data(layer, 'timestep', (global_min, global_max), w_start, w_end))
+                for layer in self._layers: frame_traces.extend(self._generate_trace_data(layer, 'categorical', None, w_start, w_end))
+                
+                frames.append(go.Frame(data=frame_traces, traces=dynamic_indices, name=str(f_idx)))
+                
                 label_txt = str(f_idx)
                 if date_vals is not None and f_idx < len(date_vals):
                     try: label_txt = pd.to_datetime(date_vals[f_idx]).strftime('%Y-%m-%d %H:%M:%S')
                     except: pass
                 steps.append(dict(method="animate", args=[[str(f_idx)], dict(mode="immediate", frame=dict(duration=100, redraw=True), transition=dict(duration=0))], label=label_txt))
+            
             self.fig.frames = frames
             self.fig.update_layout(
                 sliders=[dict(active=0, currentvalue={"prefix": "Time: "}, pad={"t": 50}, steps=steps)],
-                updatemenus=[dict(type="buttons", showactive=False, x=0.0, y=1.0, xanchor="left", yanchor="top", direction="right", buttons=[dict(label="Play", method="animate", args=[None, dict(frame=dict(duration=100, redraw=True), fromcurrent=True)]), dict(label="Pause", method="animate", args=[[None], dict(mode="immediate", frame=dict(duration=0, redraw=False))])])]
+                updatemenus=[
+                    dict(type="buttons", showactive=False, x=0.0, y=1.0, xanchor="left", yanchor="top", direction="right", buttons=[dict(label="Play", method="animate", args=[None, dict(frame=dict(duration=100, redraw=True), fromcurrent=True)]), dict(label="Pause", method="animate", args=[[None], dict(mode="immediate", frame=dict(duration=0, redraw=False))])]),
+                    dict(type="buttons", showactive=True, x=0.2, y=1.0, xanchor="left", yanchor="top", direction="right", buttons=buttons)
+                ]
             )
+        else:
+            # Just mode buttons
+            self.fig.update_layout(
+                updatemenus=[
+                    dict(type="buttons", showactive=True, x=0.0, y=1.0, xanchor="left", yanchor="top", direction="right", buttons=buttons)
+                ]
+            )
+            # Hide coloraxis default
+            self.fig.update_layout(coloraxis=dict(showscale=False))
 
     def save(self, filename: str):
         self._build_plot()

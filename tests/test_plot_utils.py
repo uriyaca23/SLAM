@@ -32,12 +32,12 @@ def test_plotting():
     
     plotter = location_plot_utils.LocationPlotter(title="Reverted Functional API Test")
     
-    plotter.add_points(lla, sys='lla', values=times, label="Path", colorbar_title="Times")
+    plotter.add_points(lla, sys='lla', timestep_values=times, label="Path", colorbar_title="Times")
     
     plotter.add_covariance_2d(
         coords=lla, coords_sys='lla',
         covariance=cov_lla, cov_sys='lla',
-        values=times, label="Uncertainty",
+        timestep_values=times, label="Uncertainty",
         colorbar_title="Times"
     )
     
@@ -45,7 +45,7 @@ def test_plotting():
         coords=lla, coords_sys='lla',
         velocity=vel_enu, vel_sys='enu', vel_ref_lla=lla[0:1], # Using first point as Ref for all? Or explicit?
         # In functional test, let's assume vel_ref=lla[0:1] to match previous logic
-        scale=20.0, values=times, label="Vel"
+        scale=20.0, timestep_values=times, label="Vel"
     )
     
     plotter.save(os.path.join(RESULTS_DIR, "test_plot_reverted.html"))
@@ -59,7 +59,7 @@ def test_categorical():
     cats = ["A"]*10 + ["B"]*10
     
     plotter = location_plot_utils.LocationPlotter(title="Categorical")
-    plotter.add_points(lla, sys='lla', values=cats, label="Points")
+    plotter.add_points(lla, sys='lla', categorical_values=cats, label="Points")
     plotter.save(os.path.join(RESULTS_DIR, "test_plot_cat_reverted.html"))
 
 if __name__ == "__main__":

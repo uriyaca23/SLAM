@@ -131,7 +131,7 @@ def test_gsdc_ecef():
     plotter.add_points(
         coords=gt_coords_ecef, # ECEF
         sys='ecef',
-        values=gt_datetimes,
+        timestep_values=gt_datetimes,
         label="Ground Truth (ECEF)",
         color="lime",
         marker_size=6,
@@ -145,7 +145,7 @@ def test_gsdc_ecef():
         coords_sys='ecef',
         velocity=gt_displacement_ecef,
         vel_sys='ecef',
-        values=gt_datetimes,
+        timestep_values=gt_datetimes,
         label="GT Velocity (ECEF)",
         color="lime",
         scale=1.0, 
@@ -159,7 +159,7 @@ def test_gsdc_ecef():
         coords_sys='ecef',
         covariance=gt_cov_ecef,
         cov_sys='ecef',
-        values=gt_datetimes,
+        timestep_values=gt_datetimes,
         label="GT Covariance (ECEF Input)",
         color="lime",
         sigma=2.146,
@@ -171,7 +171,7 @@ def test_gsdc_ecef():
     plotter.add_points(
         coords=gnss_ecef_t, # ECEF
         sys='ecef',
-        values=gnss_datetimes,
+        timestep_values=gnss_datetimes,
         label="GNSS WLS (ECEF)",
         color="red",
         marker_size=5,
@@ -185,7 +185,7 @@ def test_gsdc_ecef():
         coords_sys='ecef',
         velocity=gnss_displacement_ecef,
         vel_sys='ecef',
-        values=gnss_datetimes,
+        timestep_values=gnss_datetimes,
         label="GNSS Velocity (ECEF)",
         color="red",
         scale=1.0,

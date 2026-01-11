@@ -20,7 +20,7 @@ def debug_trace():
     timestamps = np.array([start_time + timedelta(seconds=i*30) for i in range(N)])
     
     print("Adding points...")
-    plotter.add_points(traj, sys='lla', values=timestamps, label="Points")
+    plotter.add_points(traj, sys='lla', timestep_values=timestamps, label="Points")
     
     print("Inspecting _layers...")
     layer = plotter._layers[0]
