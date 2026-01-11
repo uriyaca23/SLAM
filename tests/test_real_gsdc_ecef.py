@@ -79,10 +79,10 @@ def test_gsdc_ecef():
     gt_velocity_enu_t = torch.tensor(gt_velocity_enu, dtype=torch.float64)
 
     # Convert ENU Velocity -> ECEF Velocity Vector
-    # Using convert_vector(vec_sys='enu', dst_sys='ecef')
+    # Using convert_vector(src_sys='enu', dst_sys='ecef')
     gt_velocity_ecef = location_utils.convert_vector(
         vec=gt_velocity_enu_t,
-        vec_sys='enu',
+        src_sys='enu',
         dst_sys='ecef',
         coords=gt_coords_lla, # Need LLA for ENU ref (or could use ECEF coords if convert_vector handles it)
         coords_sys='lla',      # Let's provide LLA for robustness of ENU definition

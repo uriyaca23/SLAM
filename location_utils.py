@@ -303,7 +303,7 @@ def convert_covariance(
 
 def convert_vector(
     vec: Any,
-    vec_sys: str,
+    src_sys: str,
     dst_sys: str,
     coords: Any,
     coords_sys: str = 'lla',
@@ -330,7 +330,7 @@ def convert_vector(
     N = t_vec.shape[0]
     I = torch.eye(3, device=device, dtype=torch.float64).unsqueeze(0).expand(N, -1, -1)
     
-    v_sys = vec_sys.lower().strip()
+    v_sys = src_sys.lower().strip()
     d_sys = dst_sys.lower().strip()
 
     if v_sys == 'lla': M1 = _get_jac_lla_to_ecef(coords_lla)

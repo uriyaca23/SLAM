@@ -226,7 +226,7 @@ class LocationPlotter:
         # Convert Velocity to Local ENU
         vel_enu = location_utils.convert_vector(
             vec=velocity,
-            vec_sys=vel_sys,
+            src_sys=vel_sys,
             dst_sys='enu',
             coords=coords,
             coords_sys=coords_sys,
