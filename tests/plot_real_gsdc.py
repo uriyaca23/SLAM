@@ -141,11 +141,16 @@ def plot_real_gsdc():
         slide_step=20 
     )
     
+    # Create Dummy Categorical Data for Testing
+    # E.g. "High Speed" vs "Low Speed"
+    speed_cats = np.where(gt_speed > 5.0, 'High Speed', 'Low Speed')
+
     print("Adding Ground Truth...")
     plotter.add_points(
         coords=gt_coords,
         sys='lla',
         timestep_values=gt_datetimes,
+        categorical_values=speed_cats,
         label="Ground Truth",
         color="lime", # Lighter green for satellite visibility
         marker_size=6,
@@ -161,6 +166,7 @@ def plot_real_gsdc():
         vel_sys='enu',
         vel_ref_lla=gt_coords,
         timestep_values=gt_datetimes,
+        categorical_values=speed_cats,
         label="GT Velocity (Step Result)",
         color="lime", # Match GT color
         scale=1.0, # 1:1 scale with time-step displacement
@@ -176,6 +182,7 @@ def plot_real_gsdc():
         cov_sys='enu',
         cov_ref_lla=gt_coords,
         timestep_values=gt_datetimes,
+        categorical_values=speed_cats,
         label="GT Uncertainty (90%)",
         color="lime", # Match GT color
         sigma=2.146, # 90% confidence for 2D Gaussian (Chi-square 2 dof)

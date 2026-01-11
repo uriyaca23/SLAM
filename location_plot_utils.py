@@ -291,7 +291,6 @@ class LocationPlotter:
         ellipse_points = circle_batch @ T.transpose(1, 2)
         return ellipse_points
 
-    # --- Retain Logic ---
     def _generate_trace_data(self, layer, mode, global_clim=None, start_idx=None, end_idx=None, is_frame=False):
         # Determine Values for Mode
         vals_to_use = None
@@ -306,12 +305,6 @@ class LocationPlotter:
         
         # Fallback to Name mode if data missing for requested mode
         if mode != 'name' and vals_to_use is None:
-             # Effectively return empty traces for this mode so it doesn't show garbage
-             # But we must preserve TRACE COUNT for frames consistency?
-             # E.g. if categorical has 3 categories globally, we need 3 empty traces.
-             # If timestep lines, we need 20 empty traces.
-             # This is tricky if 'vals_to_use' is None, we don't know categories.
-             # Easier assumption: If no data, we yield "empty" traces based on GLOBAL layer properties?
              pass 
 
         # Slice Data
@@ -340,7 +333,7 @@ class LocationPlotter:
              curr_vals = vals_to_use
         
         traces = []
-        name_prefix = layer['label'] # No suffix for Name mode
+        name_prefix = layer['label']
         
         # --- MODE SPECIFIC GENERATION ---
         
@@ -358,11 +351,17 @@ class LocationPlotter:
                      else: t_lat, t_lon = flatten_lines(lines[idxs])
                  
                  sym = layer.get('symbol', 'circle')
+                 
+                 # Dynamic Legend Name: "Layer - Category"
+                 leg_name = f"{name_prefix} - {cat}"
+                 
                  trace = dict(
                      type='scattermap', lat=t_lat, lon=t_lon,
                      mode='lines' if layer['type']=='lines' else ('text' if sym in ['cross','x'] else 'markers'),
-                     showlegend=False, opacity=layer['opacity'],
-                     name=f"{name_prefix} - {cat}", legendgroup=f"{name_prefix}_{cat}"
+                     opacity=layer['opacity'],
+                     name=leg_name, 
+                     legendgroup=leg_name, # Group by specific cat so they toggle independently
+                     showlegend=True
                  )
                  # Style
                  c = cat_colors[i]
@@ -390,11 +389,19 @@ class LocationPlotter:
                       if curr_vals is not None and len(curr_vals) > 0:
                           idxs = np.where(slice_bins == b)[0]
                           if len(idxs) > 0: t_lat, t_lon = flatten_lines(lines[idxs])
-                      traces.append(dict(
+                      
+                      # Force legend item for first bin even if empty
+                      show_leg = (b == 0)
+                      if show_leg and len(t_lat) == 0:
+                           t_lat, t_lon = [None], [None]
+
+                      trace = dict(
                           type='scattermap', lat=t_lat, lon=t_lon, mode='lines',
                           line=dict(color=sample_colors[b], width=2), 
-                          showlegend=False, opacity=layer['opacity'], hoverinfo='skip'
-                      ))
+                          opacity=layer['opacity'], hoverinfo='skip',
+                          legendgroup=name_prefix, name=name_prefix, showlegend=show_leg
+                      )
+                      traces.append(trace)
              else:
                   # Scatter (Points) with ColorAxis
                   t_lat, t_lon = [], []
@@ -404,37 +411,28 @@ class LocationPlotter:
                   if sym in ['cross', 'x']:
                       trace = dict(
                           type='scattermap', lat=t_lat, lon=t_lon, mode='text', text=['x']*len(t_lat),
-                          showlegend=False, opacity=layer['opacity']
+                          opacity=layer['opacity']
                       )
                       v_float = curr_vals.astype("datetime64[ns]").astype(float) if (type_to_use=='date') else curr_vals
                       trace['textfont'] = dict(size=layer['size'], color=v_float, coloraxis='coloraxis')
                   else:
                       trace = dict(
                            type='scattermap', lat=t_lat, lon=t_lon, mode='markers',
-                           showlegend=False, opacity=layer['opacity']
+                           opacity=layer['opacity']
                       )
                       v_float = curr_vals.astype("datetime64[ns]").astype(float) if (type_to_use=='date') else curr_vals
                       trace['marker'] = dict(
                           size=layer['size'], symbol=sym,
                           color=v_float, coloraxis='coloraxis'
                       )
+                  # Points: Single trace, single legend
+                  trace['name'] = name_prefix
+                  trace['legendgroup'] = name_prefix
+                  trace['showlegend'] = True
                   traces.append(trace)
 
         else:
-             # Name Mode (Default fallback)
-             # If "fallback" logic is triggered (e.g. asking for categorical but none exists),
-             # we return Empty Traces matching structure if we tracked structure, 
-             # OR we return a Name trace?
-             # Frame consistency requires same NUMBER of traces.
-             # If we are in 'categorical' mode but this layer has no categories, we should ideally produce 0 traces?
-             # BUT if we produced 0 traces for frame 0, and 0 for frame 1, that matches.
-             # The problem is mixing layers.
-             # If Layer A has categories, Layer B does not.
-             # In Categorical Mode: Layer A shows traces. Layer B shows nothing? 
-             # User said: "timestep and categorical are optional inputs, and if inserted they should be added to a switched button"
-             # This implies layers without them just don't participate or show default?
-             # Let's assume they show NOTHING in that specific mode if data is missing.
-             
+             # Name Mode (Default)
              if mode == 'name':
                  t_lat, t_lon = [], []
                  if layer['type'] == 'lines': 
@@ -442,7 +440,12 @@ class LocationPlotter:
                  else: 
                      if lats.shape[0] > 0: t_lat, t_lon = lats, lons
                  
-                 trace = dict(type='scattermap', lat=t_lat, lon=t_lon, showlegend=False, opacity=layer['opacity'])
+                 trace = dict(
+                     type='scattermap', lat=t_lat, lon=t_lon, 
+                     opacity=layer['opacity'],
+                     name=name_prefix, legendgroup=name_prefix, showlegend=True
+                 )
+                 
                  if layer['type'] == 'lines':
                      trace['mode'] = 'lines'; trace['line'] = dict(color=layer['color'], width=2)
                  else:
@@ -455,31 +458,6 @@ class LocationPlotter:
                          trace['marker'] = dict(size=layer['size'], color=layer['color'], symbol=sym)
                  traces.append(trace)
 
-        return traces
-
-    def _get_static_traces(self):
-        # Only generating "Name" style legend items (per User Req)
-        traces = []
-        for layer in self._layers:
-            name = layer['label']
-            sym = layer.get('symbol', 'circle')
-            
-            trace = dict(
-                type='scattermap', lat=[None], lon=[None], 
-                name=name, legendgroup=name, showlegend=True, opacity=1
-            )
-            color = layer['color']
-            
-            if layer['type'] == 'lines': 
-                trace['mode'] = 'lines'
-                trace['line'] = dict(color=color, width=2)
-            elif sym in ['cross', 'x']: 
-                trace['mode']='text'; trace['text']=['x']
-                trace['textfont']=dict(size=layer['size'], color=color)
-            else: 
-                trace['mode']='markers'
-                trace['marker']=dict(size=layer['size'], color=color, symbol=sym)
-            traces.append(trace)
         return traces
 
     def _build_plot(self):
@@ -516,22 +494,12 @@ class LocationPlotter:
             showscale=True
         )
         if is_date_axis:
-             # Plotly coloraxis doesn't support date formatting automatically in the same way as tickformat?
-             # It acts as numeric. We might need tickvals/text if we want pretty dates.
-             # For now, let's just leave it numeric/raw or see if standard simple formatting works.
-             # Ideally we pass 'tickformat' to colorbar.
              cbar_args['colorbar']['tickformat'] = '%Y-%m-%d\n%H:%M:%S'
 
         self.fig.update_layout(coloraxis=cbar_args)
         
-        # 2. Add Static Legend Traces (Always Visible)
-        for t in self._get_static_traces(): self.fig.add_trace(t)
-        
         # 3. Generate Data Traces for All Modes
-        # Structure: [Static Traces] + [Name Traces] + [Timestep Traces] + [Categorical Traces]
-        # We need to track indices to toggle visibility.
-        
-        static_count = len(self._get_static_traces())
+        # No more static traces.
         
         traces_name = []
         traces_time = []
@@ -564,8 +532,7 @@ class LocationPlotter:
         all_traces = traces_name + traces_time + traces_cat
         
         # Indices relative to fig.data
-        # fig.data has [Static...] then we add [Name... Time... Cat...]
-        base_idx = static_count
+        base_idx = 0
         name_range = range(base_idx, base_idx + len(traces_name))
         time_range = range(base_idx + len(traces_name), base_idx + len(traces_name) + len(traces_time))
         cat_range = range(base_idx + len(traces_name) + len(traces_time), base_idx + len(all_traces))
@@ -577,37 +544,45 @@ class LocationPlotter:
         for t in all_traces: self.fig.add_trace(t)
         
         # 4. Buttons
-        # We need to construct visibility arrays for the WHOLE fig.data
-        # Static traces (0 to static_count-1) -> Always True
         total_traces = len(self.fig.data)
         
         def get_vis(active_range):
-            v = [True] * static_count # Static always visible
-            # Dynamic part
-            # Initialize all dynamic to False
-            dyn = [False] * (total_traces - static_count)
-            # Enable active range
+            dyn = [False] * total_traces
             for i in active_range:
-                if i >= static_count: dyn[i - static_count] = True
-            return v + dyn
+                if i < total_traces: dyn[i] = True
+            return dyn
 
-        buttons = [
-            dict(
-                label="Name",
-                method="update",
-                args=[{"visible": get_vis(name_range)}, {"coloraxis.showscale": False}]
-            ),
-            dict(
-                label="Timestep",
-                method="update",
-                args=[{"visible": get_vis(time_range)}, {"coloraxis.showscale": True}]
-            ),
-            dict(
-                label="Categorical",
-                method="update",
-                args=[{"visible": get_vis(cat_range)}, {"coloraxis.showscale": False}]
-            )
-        ]
+        # Determine if Categorical data exists
+        has_cat_data = False
+        for layer in self._layers:
+            cv = layer.get('categorical_values')
+            if cv is not None and len(cv) > 0:
+                has_cat_data = True
+                break
+
+        # Check has_time_data (calculated earlier)
+        
+        buttons = []
+        # Name Button (Always)
+        buttons.append(dict(
+            label="Name",
+            method="update",
+            args=[{"visible": get_vis(name_range)}, {"coloraxis.showscale": False}]
+        ))
+        
+        if has_time_data:
+            buttons.append(dict(
+                 label="Timestep",
+                 method="update",
+                 args=[{"visible": get_vis(time_range)}, {"coloraxis.showscale": True}]
+            ))
+            
+        if has_cat_data:
+            buttons.append(dict(
+                 label="Categorical",
+                 method="update",
+                 args=[{"visible": get_vis(cat_range)}, {"coloraxis.showscale": False}]
+            ))
         
         # 5. Frames (Slider)
         if self.use_slider and max_N > 0:
@@ -615,8 +590,6 @@ class LocationPlotter:
             steps = []
             
             # Identify indices of dynamic traces in fig.data
-            # We must update ALL dynamic traces (Name, Time, Cat) in every frame 
-            # so that switching mode while paused/playing works correctly.
             dynamic_indices = list(range(base_idx, total_traces))
             
             for f_idx in range(0, max_N, self.slide_step):
@@ -647,6 +620,8 @@ class LocationPlotter:
             )
         else:
             # Just mode buttons
+            # If only 1 button (Name), we don't strictly need a menu, but for consistency keep it unless it's ONLY Name. 
+            # If user wants switching, they need buttons.
             self.fig.update_layout(
                 updatemenus=[
                     dict(type="buttons", showactive=True, x=0.0, y=1.0, xanchor="left", yanchor="top", direction="right", buttons=buttons)

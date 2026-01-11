@@ -52,14 +52,14 @@ def check_process_values():
     
     # Check layer
     layer = plotter._layers[0]
-    print(f"Layer val_type: {layer['val_type']}")
-    print(f"Layer values dtype: {layer['values'].dtype}")
+    print(f"Layer val_type: {layer['timestep_type']}")
+    print(f"Layer values dtype: {layer['timestep_values'].dtype}")
     
     # Check date_vals logic in _build_plot
     date_vals = None
     for l in plotter._layers:
-         if l['val_type']=='date' and l['values'] is not None and date_vals is None: 
-              date_vals = l['values']
+         if l['timestep_type']=='date' and l['timestep_values'] is not None and date_vals is None: 
+              date_vals = l['timestep_values']
               print("Found date_vals in layer!")
               
     if date_vals is not None:

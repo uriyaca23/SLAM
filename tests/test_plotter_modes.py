@@ -44,31 +44,21 @@ class TestLocationPlotterModes(unittest.TestCase):
         
         # 2. Check Traces
         # Expected: 
-        # 1 Static Legend Trace (Name style)
-        # 1 Name Trace (hidden or visible)
-        # 1 Timestep Trace (hidden or visible)
-        # 2 Categorical Traces (One for 'A', one for 'B')
-        # Total = 1 + 1 + 1 + 2 = 5 traces
+        # 1 Name Trace (Visible)
+        # 1 Timestep Trace (Hidden)
+        # 2 Categorical Traces (Hidden)
+        # Total = 1 + 1 + 2 = 4 traces
         
-        self.assertEqual(len(fig.data), 5)
+        self.assertEqual(len(fig.data), 4)
         
         # 3. Check Visibility Logic (Defaults)
-        # Static: Visible
-        # Name: Visible
-        # Timestep: Hidden
-        # Cat: Hidden
-        
-        self.assertTrue(fig.data[0].visible == True or fig.data[0].visible is None) # Static (might be None which is True default?)
-        # Wait, I explicitly set opacity=1 but didn't set 'visible' in _get_static_traces, so default is True.
-        
-        # Check others
-        # Name (idx 1)
-        self.assertTrue(fig.data[1].visible) 
-        # Timestep (idx 2)
+        # Name (idx 0): Visible
+        self.assertTrue(fig.data[0].visible) 
+        # Timestep (idx 1): Hidden
+        self.assertFalse(fig.data[1].visible)
+        # Cat (idx 2, 3): Hidden
         self.assertFalse(fig.data[2].visible)
-        # Cat (idx 3, 4)
         self.assertFalse(fig.data[3].visible)
-        self.assertFalse(fig.data[4].visible)
 
     def test_shared_colorbar(self):
         plotter = LocationPlotter()
@@ -84,6 +74,39 @@ class TestLocationPlotterModes(unittest.TestCase):
         self.assertIsNotNone(caxis)
         self.assertEqual(caxis.cmin, 0)
         self.assertEqual(caxis.cmax, 110)
+
+    def test_buttons_visibility(self):
+        # Case 1: Only Name data
+        plotter = LocationPlotter(title="Name Only")
+        plotter.add_points(np.zeros((3,3)), label="L1") # No timestep, no cat
+        plotter._build_plot()
+        
+        # Check buttons
+        updatemenus = plotter.fig.layout.updatemenus
+        buttons = []
+        if updatemenus:
+            for menu in updatemenus:
+                if 'buttons' in menu: buttons.extend(menu['buttons'])
+        
+        labels = [b['label'] for b in buttons]
+        # Should contain Name, but NOT Timestep or Categorical
+        self.assertIn('Name', labels)
+        self.assertNotIn('Timestep', labels)
+        self.assertNotIn('Categorical', labels)
+        
+        # Case 2: Validation of Timestep
+        plotter2 = LocationPlotter(title="Time Only")
+        plotter2.add_points(np.zeros((3,3)), timestep_values=[1,2,3], label="L1")
+        plotter2._build_plot()
+        
+        buttons2 = []
+        if plotter2.fig.layout.updatemenus:
+             for menu in plotter2.fig.layout.updatemenus:
+                  if 'buttons' in menu: buttons2.extend(menu['buttons'])
+        labels2 = [b['label'] for b in buttons2]
+        self.assertIn('Name', labels2)
+        self.assertIn('Timestep', labels2)
+        self.assertNotIn('Categorical', labels2)
 
 if __name__ == '__main__':
     unittest.main()
