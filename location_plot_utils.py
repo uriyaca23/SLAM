@@ -292,7 +292,7 @@ class LocationPlotter:
         ellipse_points = circle_batch @ T.transpose(1, 2)
         return ellipse_points
 
-    def _generate_trace_data(self, layer, mode, global_clim=None, start_idx=None, end_idx=None, is_frame=False):
+    def _generate_trace_data(self, layer, mode, global_clim=None, start_idx=None, end_idx=None, is_frame=False, fixed_categories=None, fixed_bins_count=None):
         # Determine Values for Mode
         vals_to_use = None
         type_to_use = 'none'
@@ -304,9 +304,11 @@ class LocationPlotter:
             vals_to_use = layer.get('categorical_values')
             type_to_use = layer.get('categorical_type', 'none')
         
-        # Fallback to Name mode if data missing for requested mode
+        # Fallback to Name mode ONLY if not enforcing fixed structure
+        # If fixed_categories/bins are provided, we MUST generate corresponding (potentially empty) traces.
         if mode != 'name' and (vals_to_use is None or len(vals_to_use) == 0):
-             return self._generate_trace_data(layer, 'name', global_clim, start_idx, end_idx, is_frame)
+             if fixed_categories is None and fixed_bins_count is None:
+                 return self._generate_trace_data(layer, 'name', global_clim, start_idx, end_idx, is_frame)
 
         # Slice Data
         def flatten_lines_data(lines_tensor, aux_vals_list=None):
@@ -424,11 +426,35 @@ class LocationPlotter:
         
         # --- MODE SPECIFIC GENERATION ---
         
-        if mode == 'categorical' and vals_to_use is not None:
-             # Use ALL values to determine categories structure
-             all_vals = layer.get('categorical_values')
-             unique_cats = np.unique(all_vals) if all_vals is not None else np.array([])
-             cat_colors = pcolors.sample_colorscale(layer['cmap'], np.linspace(0, 1, len(unique_cats)))
+        if mode == 'categorical':
+             # Use ALL values to determine categories structure IF fixed list provided
+             # Otherwise dynamic based on slice (legacy/single plot behavior)
+             if fixed_categories is not None:
+                 unique_cats = fixed_categories
+                 # Generate colors based on fixed set to ensure consistency
+                 cat_colors = pcolors.sample_colorscale(layer['cmap'], np.linspace(0, 1, len(unique_cats)))
+             else:
+                 # Dynamic
+                 all_vals_global = layer.get('categorical_values') # Global for colors?
+                 unique_global = np.unique(all_vals_global) if all_vals_global is not None else np.array([])
+                 
+                 # Dynamic slice cats
+                 curr_unique = np.unique(curr_vals) if curr_vals is not None else np.array([])
+                 unique_cats = curr_unique
+                 
+                 # Map colors consistent with GLOBAL set?
+                 # If dynamic, colors might shift if we resample. 
+                 # Best to map to global index.
+                 cat_colors = []
+                 if len(unique_global) > 0:
+                      global_colors = pcolors.sample_colorscale(layer['cmap'], np.linspace(0, 1, len(unique_global)))
+                      # Find indices
+                      for c in unique_cats:
+                           idx = np.where(unique_global == c)[0]
+                           if len(idx) > 0: cat_colors.append(global_colors[idx[0]])
+                           else: cat_colors.append('gray')
+                 else:
+                      cat_colors = pcolors.sample_colorscale(layer['cmap'], np.linspace(0, 1, len(unique_cats)))
              
              for i, cat in enumerate(unique_cats):
                  idxs = np.where(curr_vals == cat)[0] if curr_vals is not None else []
@@ -451,6 +477,9 @@ class LocationPlotter:
                          t_lat, t_lon, t_alt, aux = flatten_lines_data(sub_lines, [sub_times_raw, sub_cats_raw])
                          # aux[0] is time, aux[1] is cat
                          c_data = build_customdata(t_lat, t_lon, t_alt, aux[0], aux[1])
+                 else:
+                     # Empty Trace (Placeholder for fixed structure)
+                     t_lat, t_lon = [None], [None]
                  
                  sym = layer.get('symbol', 'circle')
                  
@@ -474,97 +503,118 @@ class LocationPlotter:
                  else: trace['marker'] = dict(size=layer['size'], color=c, symbol=sym)
                  traces.append(trace)
         
-        elif mode == 'timestep' and vals_to_use is not None:
+        elif mode == 'timestep': # and vals_to_use is not None:
              # Gradient Line or Color Axis Marker
              do_gradient_lines = (layer['type'] == 'lines')
              v_min, v_max = global_clim if global_clim else (0.0, 1.0)
              
-             if do_gradient_lines:
-                  num_bins = 20
-                  norm_factor = (v_max - v_min) if v_max > v_min else 1.0
-                  sample_colors = pcolors.sample_colorscale(layer['cmap'], np.linspace(0, 1, num_bins))
-                  
-                  v_float = curr_vals.astype("datetime64[ns]").astype(float) if (type_to_use=='date') else curr_vals.astype(float)
-                  # Binning relative to Global Range
-                  slice_bins = np.floor((v_float - v_min) / norm_factor * (num_bins - 1e-6)).astype(int) if (curr_vals is not None and len(curr_vals)>0) else []
-                  
-                  for b in range(num_bins):
+             # If vals_to_use is none, but we are in fixed_bins mode, we must proceed
+             proceed = (vals_to_use is not None) or (fixed_bins_count is not None)
+             
+             if proceed:
+                 if do_gradient_lines:
+                      num_bins = fixed_bins_count if fixed_bins_count is not None else 20
+                      norm_factor = (v_max - v_min) if v_max > v_min else 1.0
+                      sample_colors = pcolors.sample_colorscale(layer['cmap'], np.linspace(0, 1, num_bins))
+                      
+                      if curr_vals is not None and len(curr_vals) > 0:
+                           v_float = curr_vals.astype("datetime64[ns]").astype(float) if (type_to_use=='date') else curr_vals.astype(float)
+                           # Binning relative to Global Range
+                           slice_bins = np.floor((v_float - v_min) / norm_factor * (num_bins - 1e-6)).astype(int)
+                      else:
+                           slice_bins = []
+                      
+                      for b in range(num_bins):
+                          t_lat, t_lon, t_alt = [], [], []
+                          c_data = None
+                          
+                          if len(slice_bins) > 0: # Check array len
+                              idxs = np.where(slice_bins == b)[0]
+                              if len(idxs) > 0: 
+                                   sub_lines = lines[idxs]
+                                   sub_times_raw = curr_time[idxs] if curr_time is not None else None
+                                   sub_cats_raw = curr_cat[idxs] if curr_cat is not None else None
+                                   t_lat, t_lon, t_alt, aux = flatten_lines_data(sub_lines, [sub_times_raw, sub_cats_raw])
+                                   c_data = build_customdata(t_lat, t_lon, t_alt, aux[0], aux[1])
+                          
+                          # Force legend item for first bin even if empty.
+                          # Actually, for Animation Stability, we want ALL traces to exist.
+                          # Legend: Show only for b=0.
+                          show_leg = (b == 0)
+                          if len(t_lat) == 0:
+                               t_lat, t_lon = [None], [None]
+    
+                          trace = dict(
+                              type='scattermap', lat=t_lat, lon=t_lon, mode='lines',
+                              line=dict(color=sample_colors[b], width=2), 
+                              opacity=layer['opacity'], hoverinfo='all',
+                              legendgroup=name_prefix, name=name_prefix, showlegend=show_leg,
+                              customdata=c_data,
+                              hovertemplate=hover_temp
+                          )
+                          traces.append(trace)
+                 else:
+                      # Scatter (Points) with ColorAxis
+                      # Points are usually 1 trace, updated fully.
+                      # If vals missing, empty trace.
                       t_lat, t_lon, t_alt = [], [], []
                       c_data = None
                       
-                      if curr_vals is not None and len(curr_vals) > 0:
-                          idxs = np.where(slice_bins == b)[0]
-                          if len(idxs) > 0: 
-                               sub_lines = lines[idxs]
-                               sub_times_raw = curr_time[idxs] if curr_time is not None else None
-                               sub_cats_raw = curr_cat[idxs] if curr_cat is not None else None
-                               t_lat, t_lon, t_alt, aux = flatten_lines_data(sub_lines, [sub_times_raw, sub_cats_raw])
-                               c_data = build_customdata(t_lat, t_lon, t_alt, aux[0], aux[1])
+                      if lats is not None and lats.shape[0] > 0: 
+                            t_lat, t_lon, t_alt = lats, lons, alts
+                            c_data = build_customdata(t_lat, t_lon, t_alt, curr_time, curr_cat)
+                      else:
+                            t_lat, t_lon = [None], [None]
                       
-                      # Force legend item for first bin even if empty
-                      show_leg = (b == 0)
-                      if show_leg and len(t_lat) == 0:
-                           t_lat, t_lon = [None], [None]
-
-                      trace = dict(
-                          type='scattermap', lat=t_lat, lon=t_lon, mode='lines',
-                          line=dict(color=sample_colors[b], width=2), 
-                          opacity=layer['opacity'], hoverinfo='all',
-                          legendgroup=name_prefix, name=name_prefix, showlegend=show_leg,
-                          customdata=c_data,
-                          hovertemplate=hover_temp
-                      )
+                      sym = layer.get('symbol', 'circle')
+                      # Use global clim for coloraxis mapping implicitly
+                      
+                      if sym in ['cross', 'x']:
+                          trace = dict(
+                              type='scattermap', lat=t_lat, lon=t_lon, mode='text', text=['x']*len(t_lat),
+                              opacity=layer['opacity']
+                          )
+                          v_float = curr_vals.astype("datetime64[ns]").astype(float) if (curr_vals is not None and type_to_use=='date') else curr_vals
+                          trace['textfont'] = dict(size=layer['size'], color=v_float, coloraxis='coloraxis')
+                      else:
+                          trace = dict(
+                               type='scattermap', lat=t_lat, lon=t_lon, mode='markers',
+                               opacity=layer['opacity']
+                          )
+                          v_float = curr_vals.astype("datetime64[ns]").astype(float) if (curr_vals is not None and type_to_use=='date') else curr_vals
+                          trace['marker'] = dict(
+                              size=layer['size'], symbol=sym,
+                              color=v_float, coloraxis='coloraxis'
+                          )
+                      # Points: Single trace, single legend
+                      trace['name'] = name_prefix
+                      trace['legendgroup'] = name_prefix
+                      trace['showlegend'] = True
+                      trace['customdata'] = c_data
+                      trace['hovertemplate'] = hover_temp
                       traces.append(trace)
-             else:
-                  # Scatter (Points) with ColorAxis
-                  t_lat, t_lon, t_alt = [], [], []
-                  c_data = None
-                  
-                  if lats.shape[0] > 0: 
-                        t_lat, t_lon, t_alt = lats, lons, alts
-                        c_data = build_customdata(t_lat, t_lon, t_alt, curr_time, curr_cat)
-                  
-                  sym = layer.get('symbol', 'circle')
-                  if sym in ['cross', 'x']:
-                      trace = dict(
-                          type='scattermap', lat=t_lat, lon=t_lon, mode='text', text=['x']*len(t_lat),
-                          opacity=layer['opacity']
-                      )
-                      v_float = curr_vals.astype("datetime64[ns]").astype(float) if (type_to_use=='date') else curr_vals
-                      trace['textfont'] = dict(size=layer['size'], color=v_float, coloraxis='coloraxis')
-                  else:
-                      trace = dict(
-                           type='scattermap', lat=t_lat, lon=t_lon, mode='markers',
-                           opacity=layer['opacity']
-                      )
-                      v_float = curr_vals.astype("datetime64[ns]").astype(float) if (type_to_use=='date') else curr_vals
-                      trace['marker'] = dict(
-                          size=layer['size'], symbol=sym,
-                          color=v_float, coloraxis='coloraxis'
-                      )
-                  # Points: Single trace, single legend
-                  trace['name'] = name_prefix
-                  trace['legendgroup'] = name_prefix
-                  trace['showlegend'] = True
-                  trace['customdata'] = c_data
-                  trace['hovertemplate'] = hover_temp
-                  traces.append(trace)
-
+        
         else:
              # Name Mode (Default)
              if mode == 'name':
                  t_lat, t_lon, t_alt = [], [], []
                  c_data = None
                  
+                 found_data = False
                  if layer['type'] == 'lines': 
                      if lines.shape[0] > 0: 
                          t_lat, t_lon, t_alt, aux = flatten_lines_data(lines, [curr_time, curr_cat])
                          c_data = build_customdata(t_lat, t_lon, t_alt, aux[0], aux[1])
+                         found_data = True
                  else: 
                      if lats.shape[0] > 0: 
                          t_lat, t_lon, t_alt = lats, lons, alts
                          c_data = build_customdata(t_lat, t_lon, t_alt, curr_time, curr_cat)
+                         found_data = True
                  
+                 if not found_data:
+                     t_lat, t_lon = [None], [None]
+                     
                  trace = dict(
                      type='scattermap', lat=t_lat, lon=t_lon, 
                      opacity=layer['opacity'],
@@ -641,6 +691,13 @@ class LocationPlotter:
         traces_time = []
         traces_cat = []
         
+        # Pre-calculate Global Categories per Layer
+        layer_global_cats = {}
+        for i, layer in enumerate(self._layers):
+            all_vals = layer.get('categorical_values')
+            unique_cats = np.unique(all_vals) if all_vals is not None else np.array([])
+            layer_global_cats[i] = unique_cats
+        
         # Slice limits
         start_idx = 0 if self.use_slider else None
         end_idx = self.slide_window if self.use_slider else None
@@ -648,7 +705,7 @@ class LocationPlotter:
         max_N = 0
         date_vals = None # For slider labels
         
-        for layer in self._layers:
+        for i, layer in enumerate(self._layers):
             if layer['type']=='points': n=len(layer['lat'])
             else: n=layer['lines_lla'].shape[0]
             if n>max_N: max_N=n
@@ -658,10 +715,10 @@ class LocationPlotter:
             
             # Name Mode
             traces_name.extend(self._generate_trace_data(layer, 'name', None, start_idx, end_idx))
-            # Timestep Mode
-            traces_time.extend(self._generate_trace_data(layer, 'timestep', (global_min, global_max), start_idx, end_idx))
-            # Cat Mode
-            traces_cat.extend(self._generate_trace_data(layer, 'categorical', None, start_idx, end_idx))
+            # Timestep Mode (Fixed 20 bins)
+            traces_time.extend(self._generate_trace_data(layer, 'timestep', (global_min, global_max), start_idx, end_idx, fixed_bins_count=20))
+            # Cat Mode (Fixed Categories)
+            traces_cat.extend(self._generate_trace_data(layer, 'categorical', None, start_idx, end_idx, fixed_categories=layer_global_cats[i]))
 
         # Add all to figure
         # Default Visibility: Name = True, others = False
@@ -734,9 +791,13 @@ class LocationPlotter:
                 w_start, w_end = f_idx, min(f_idx + self.slide_window, max_N)
                 
                 # We simply concat the mode generations exactly as we did for initial execution
-                for layer in self._layers: frame_traces.extend(self._generate_trace_data(layer, 'name', None, w_start, w_end))
-                for layer in self._layers: frame_traces.extend(self._generate_trace_data(layer, 'timestep', (global_min, global_max), w_start, w_end))
-                for layer in self._layers: frame_traces.extend(self._generate_trace_data(layer, 'categorical', None, w_start, w_end))
+                # Enforce Fixed Structures!
+                for layer in self._layers: 
+                    frame_traces.extend(self._generate_trace_data(layer, 'name', None, w_start, w_end))
+                for layer in self._layers: 
+                    frame_traces.extend(self._generate_trace_data(layer, 'timestep', (global_min, global_max), w_start, w_end, fixed_bins_count=20))
+                for i, layer in enumerate(self._layers): 
+                    frame_traces.extend(self._generate_trace_data(layer, 'categorical', None, w_start, w_end, fixed_categories=layer_global_cats[i]))
                 
                 frames.append(go.Frame(data=frame_traces, traces=dynamic_indices, name=str(f_idx)))
                 
